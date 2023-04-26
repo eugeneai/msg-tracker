@@ -35,9 +35,17 @@ data Message = Answer
                {  id::U.UUID
                -- , lev::Float
                , mm::MM.Hash64
+               -- , error::T.Text
                } deriving (Show, Eq, Generic)
 
+data ErrorReport = Error
+                 {
+                   description :: T.Text
+                 , subsys:: T.Text
+                 } deriving (Show, Eq, Generic)
+
 instance FromJSON Message
+instance FromJSON ErrorReport
 
 instance FromJSON MM.Hash64 where
 
@@ -49,6 +57,7 @@ instance FromJSON MM.Hash64 where
   parseJSON _ = CA.empty
 
 instance ToJSON Message
+instance ToJSON ErrorReport
 
 instance ToJSON MM.Hash64 where
   toJSON :: MM.Hash64 -> Value
@@ -67,7 +76,8 @@ msgServer :: IO ()
 msgServer = scotty 3333 $ do
   middleware $ staticPolicy (noDots >-> addBase "static")
 -- Логирование всех запросов. Для продакшена используйте logStdout вместо logStdoutDev
-  middleware $ logStdoutDev -- logStdout
+  middleware $ logStdout
+--  middleware $ logStdoutDev
 --  middleware $ basicAuth (verifyCredentials pool)
 --    "Haskell Blog Realm" { authIsProtected = protectedResources }
   get "/test/:word" $ do
@@ -81,8 +91,8 @@ msgServer = scotty 3333 $ do
     case muuid of
       Just uuid -> do
         let answer = Answer {id=uuid, mm=MM.hash64 b}
-        -- html $ mconcat ["<pre>", (TLE.decodeUtf8 b), "</pre>", "/n", maybe "" (TL.fromStrict . U.toText) muuid]
-        -- html $ mconcat ["<pre>", (TLE.decodeUtf8 b), "</pre>", "/n", maybe "" (TL.fromStrict . U.toText) muuid]
         json answer
 
-      Nothing -> json ()
+      Nothing -> json $ Error {
+        description="Cannot generate an UUID",
+        subsys="message saving"}
