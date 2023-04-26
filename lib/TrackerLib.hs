@@ -30,6 +30,9 @@ import qualified Data.Digest.Murmur64 as MM
 import Data.Digest.Murmur64 (asWord64)
 import qualified Data.Text.Metrics as Met
 import qualified Control.Applicative as CA
+import qualified Database.KyotoCabinet.DB.Hash as K
+import qualified Database.KyotoCabinet.Operations as K
+import qualified Data.Array.Byte as BL
 
 data Message = Answer
                {  id::U.UUID
@@ -73,26 +76,40 @@ toHash uuid = MM.hash64AddWord64 (snd rc) h0
     h0 = MM.hash64 BL.empty
 
 msgServer :: IO ()
-msgServer = scotty 3333 $ do
-  middleware $ staticPolicy (noDots >-> addBase "static")
--- Логирование всех запросов. Для продакшена используйте logStdout вместо logStdoutDev
-  middleware $ logStdout
---  middleware $ logStdoutDev
---  middleware $ basicAuth (verifyCredentials pool)
---    "Haskell Blog Realm" { authIsProtected = protectedResources }
-  get "/test/:word" $ do
-    beam <- param "word"
-    html $ mconcat ["<h1>Scotty, ", beam, " me up!!!</h1>"]
+msgServer = do
+  db <- K.makeHash "messages.kch" K.defaultLoggingOptions K.defaultHashOptions (K.Writer [K.Create] [])
+  scotty 3333 $ do
+    middleware $ staticPolicy (noDots >-> addBase "static")
+    -- Логирование всех запросов. Для продакшена используйте logStdout вместо logStdoutDev
+    middleware $ logStdout
+    --  middleware $ logStdoutDev
+    --  middleware $ basicAuth (verifyCredentials pool)
+    get "/test/:word" $ do
+      beam <- param "word"
+      html $ mconcat ["<h1>Scotty, ", beam, " me up!!!</h1>"]
 
-  -- Create new message an classify it, returning UUID and class
-  post "/messages/" $ do
-    b <- body
-    muuid <- liftIO $ UU.nextUUID
-    case muuid of
-      Just uuid -> do
-        let answer = Answer {id=uuid, mm=MM.hash64 b}
-        json answer
+    -- Create new message an classify it, returning UUID and class
+    put "/messages/" $ do
+      b <- body
+      muuid <- liftIO $ UU.nextUUID
+      case muuid of
+        Just uuid -> do
+          krc <- liftIO $ storeMessage db uuid b
+          case krc of
+            KKOK -> do
+              let answer = Answer {id=uuid, mm=MM.hash64 b}
+              json answer
+            KKError e -> json $ Error {description=T.pack e, subsys="kyotocabinet"}
 
-      Nothing -> json $ Error {
-        description="Cannot generate an UUID",
-        subsys="message saving"}
+        Nothing -> json $ Error {
+          description="Cannot generate an UUID",
+          subsys="message saving"}
+
+data KKResult = KKOK | KKError String deriving Show
+
+storeMessage :: K.WithDB db => db -> U.UUID -> BL.ByteString -> IO KKResult
+storeMessage db key msg = do
+  K.set db k (BL.toStrict msg)
+  return KKOK
+  where
+    k = BL.toStrict . U.toByteString $ key
