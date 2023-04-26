@@ -96,6 +96,8 @@ library
                  , MissingH
                  , uuid
                  , extra
+                 , murmur-hash
+                 , text-metrics
     -- Directories containing source files.
     hs-source-dirs:   lib
 
