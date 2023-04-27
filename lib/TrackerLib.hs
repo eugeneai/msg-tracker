@@ -22,6 +22,21 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 -- import Data.Aeson
 import Prelude.Compat
+    ( (++),
+      ($),
+      Eq,
+      Monad(return),
+      Show(show),
+      Monoid(mconcat),
+      String,
+      Maybe(..),
+      IO,
+      Either(..),
+      maybe,
+      snd,
+      (.),
+      id,
+      FilePath, putStrLn )
 import GHC.Generics (Generic)
 import qualified Control.Monad.Extra as Ex
 import Web.Scotty
@@ -39,9 +54,9 @@ import qualified Data.Aeson.Key as BL
 import Network.Email.Mailbox (MailboxReader(getMessages))
 
 data Message = Answer
-               {  id::U.UUID
+               {  msgid::U.UUID
                -- , lev::Float
-               , mm::MM.Hash64
+               , mm::U.UUID -- MM.Hash64 as UUID = 0.....0-hash
                -- , error::T.Text
                } deriving (Show, Eq, Generic)
 
@@ -140,21 +155,22 @@ msgServer sto = do
     -- Create new message an classify it, returning UUID and class
     put "/api-1.0/messages/" $ do
       b <- body
-      muuid <- liftIO $ U.nextUUID
-      let mm = MM.hash64 b
-      cmm <- liftIO $ checkMurMur db mm
-      -- liftIO $ print cmm
+      let mm = fromHash . MM.hash64 $ b
+      -- liftIO $ putStrLn $ "Cmurmur" ++ show mm
+      cmm <- liftIO $ getMurMur db mm
+      -- liftIO $ putStrLn $ "Gmurmur" ++ show cmm
       case cmm of
         Just uuid -> do
           json $ Error { error = "mm-exists",
-                         description="There is already such message",
+                         description="There is such message",
                          subsys= "storage"}
-        Nothing ->
+        Nothing -> do
+          muuid <- liftIO $ U.nextUUID
           case muuid of
             Just uuid -> do
               krc <- liftIO $ storeMessage db uuid b
               mmrc <- liftIO $ storeMurMur db mm uuid
-              let answer = Answer {id=uuid, mm=mm}
+              let answer = Answer {msgid=uuid, mm=mm}
               json answer
             Nothing -> json $ Error {error="no-uuid",
                                      description="Cannot generate an UUID",
@@ -169,6 +185,21 @@ msgServer sto = do
                                  subsys="storage"}
         Just msg -> raw . BL.fromStrict $ msg
 
+    get "/api-1.0/message/mm/:mm" $ do
+      uuid <- param $ "mm"
+      mmm <- liftIO $ getMurMur db $ uuid
+      case mmm of
+        Nothing -> do json $ Error {error="no-message",
+                           description="There are no such message",
+                           subsys="storage"}
+        Just uuid -> do
+          mtxt <- liftIO $ getMessage db uuid
+          case mtxt of
+            Nothing -> json $ Error {error="no-message",
+                                     description="Murmur has found, but uuid not",
+                                     subsys="storage"}
+            Just msg -> raw . BL.fromStrict $ msg
+
 data KKResult = KKOK | KKError String deriving Show
 
 uuidToBS :: U.UUID -> BS.ByteString
@@ -177,10 +208,9 @@ uuidToBS = BL.toStrict . U.toByteString
 mmToBS :: MM.Hash64 -> BS.ByteString
 mmToBS = BS.pack . show . MM.asWord64
 
-storeMessage :: Storages -> U.UUID -> BL.ByteString -> IO KKResult
+storeMessage :: Storages -> U.UUID -> BL.ByteString -> IO ()
 storeMessage sto uuid msg = do
   K.set (db $ messages sto) k (BL.toStrict msg)
-  return KKOK
   where
     k = BL.toStrict . U.toByteString $ uuid
 
@@ -189,15 +219,17 @@ getMessage sto uuid = do
   K.get (db $ messages sto) k
   where k = uuidToBS uuid
 
-storeMurMur :: Storages -> MM.Hash64 -> U.UUID -> IO ()
+storeMurMur :: Storages -> U.UUID -> U.UUID -> IO ()
 storeMurMur sto mm uuid =
   K.set (db $ murmurs sto) k uu
   where
-    k = mmToBS mm
+    k = uuidToBS mm
     uu = uuidToBS uuid
 
-checkMurMur :: Storages -> MM.Hash64 -> IO (Maybe BS.ByteString)
-checkMurMur sto mm = do
-  K.get (db $ murmurs sto) k
+getMurMur :: Storages -> U.UUID -> IO (Maybe U.UUID)
+getMurMur sto mm = do
+  uuidStr <- K.get (db $ murmurs sto) k
+  -- liftIO $ putStrLn $ "uuidStr" ++ show uuidStr
+  return $ U.fromByteString . maybe "" BL.fromStrict $ uuidStr
   where
-    k = mmToBS mm
+    k = uuidToBS mm
