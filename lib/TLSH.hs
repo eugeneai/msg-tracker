@@ -21,6 +21,7 @@ import GHC.Integer (xorInteger)
 import Data.Word8 (Word8)
 import qualified GHC.Types as G
 import GHC.Float.RealFracMethods (floorFloatInt)
+import Data.Text.Internal.Read (hexDigitToInt)
 -- import Data.Hex
 
 v_table :: Vector Word8
@@ -43,8 +44,8 @@ v_table = fromList [
     51, 65, 28, 144, 254, 221, 93, 189, 194, 139, 112, 43, 71, 109, 184, 209]
 
 
-buf :: IO (MVector (PrimState IO) Int16)
-buf = M.replicate 240 0
+-- buf :: IO (MVector (M.PrimState IO) Int16)
+-- buf = M.replicate 240 0
 
 log_1_5 :: Float
 log_1_5 = 0.4054651
@@ -90,9 +91,9 @@ swap_byte i = a .|. b
 -- toHex
 -- fromHex
 
-modDiff x y R = if dl>dr then dr else dl
+modDiff x y r = if dl>dr then dr else dl
   where
-    (dl, dr) = if x > y then (y-x, x+R-y) else (x-y, y+R-x)
+    (dl, dr) = if x > y then (y-x, x+r-y) else (x-y, y+r-x)
 
 arraySize = 256
 bitPairsDiffTable :: Vector (Vector Int16)
@@ -120,7 +121,7 @@ bitPairsDiffTable = generate arraySize row
 
 hDistance x y = s
   where
-    s = foldr sum 0 $ zip x y
+    s = TL.foldr sum 0 $ TL.zip x y
     sum (a,b) acc = acc + (bitPairsDiffTable ! b) ! a
 
 sliding_wnd_size = 5
@@ -138,14 +139,13 @@ swapUnit buf x y = do
   M.swap buf x y
 
 partition buf lfet right = do
-  case (left, right) of
-    left == right -> do return left
-    (left+1) == right -> do
+  if left == right then do return left
+    else if (left+1) == right then do
       swapUnit buf left rigth
       return left
-    _ -> do
+    else do
       let ret = left
-          pivot = shiftR (left ++ right) 1
+          pivot = shiftR (left + right) 1
           val = M.read buf pivot
 
       nret <- permuteGo val left rigth ret left
@@ -168,27 +168,27 @@ partition buf lfet right = do
 
 
 
-data TLSH = TLSH { checksum :: IO (MVector (PrimState IO) Int16)
-                 , slideWindow :: IO (MVector (PrimState IO) Int16)
-                 , aBucket :: IO (MVector (PrimState IO) Int32)
-                 , dataLen :: IO (MVector (PrimState IO) Int16)
-                 , lValue :: IO (MVector (PrimState IO) Int16)
-                 , q :: IO (MVector (PrimState IO) Int16)
-                 , lshCodeValid :: IO (MVector (PrimState IO) Bool)
-                 , tmpCode :: IO (MVector (PrimState IO) Word8)
-                 , lshCode :: IO (MVector (PrimState IO) Word8)}
+data TLSH = TLSH { checksum :: IO (MVector (M.PrimState IO) Int16)
+                 , slideWindow :: IO (MVector (M.PrimState IO) Int16)
+                 , aBucket :: IO (MVector (M.PrimState IO) Int32)
+                 , dataLen :: IO (MVector (M.PrimState IO) Int16)
+                 , lValue :: IO (MVector (M.PrimState IO) Int16)
+                 , q :: IO (MVector (M.PrimState IO) Int16)
+                 , lshCodeValid :: IO (MVector (M.PrimState IO) Bool)
+                 , tmpCode :: IO (MVector (M.PrimState IO) Word8)
+                 , lshCode :: IO (MVector (M.PrimState IO) Word8)}
 
 
-empty :: TLSH
-empty = TLSH { checksum = M.replicate tlsh_checksum_length 0
-             , slideWindow = M.replicate slidingWndSize 0
-             , aBucket = M.replicate buckets 0
-             , dataLen = M.replicate 1 0
-             , tmpCode = M.replicate code_size 0
-             , lValue = M.replicate 1 0
-             , q = M.replicate 1 0
-             , lshCode = ""
-             , lshCodeValid = M.replicate 1 False}
+emptyTlsh :: TLSH
+emptyTlsh = TLSH { checksum = M.replicate tlsh_checksum_length 0
+                 , slideWindow = M.replicate slidingWndSize 0
+                 , aBucket = M.replicate buckets 0
+                 , dataLen = M.replicate 1 0
+                 , tmpCode = M.replicate code_size 0
+                 , lValue = M.replicate 1 0
+                 , q = M.replicate 1 0
+                 , lshCode = ""
+                 , lshCodeValid = M.replicate 1 False}
 
 
 hash :: TLSH -> Either String TLSH
@@ -196,7 +196,7 @@ hash tlsh = do
   if not . lshCodeValid $ tlsh then do
     return $ Left "ERROR IN PROCESSING"
   else do
-    let tmp = empty
+    let tmp = emptyTlsh
     swapBytes (checksum tmp)
     swapByte (lValue tmp)
   where
@@ -229,6 +229,9 @@ totalDiff this other lenDiff =
   where
     microHamming ch1 ch 2 = 1 -- TODO
 
-fromTlshStr text = if TL.length text != tlsh_string_len then Left "string has wrong length"
-                   else fromHex text
+fromHex text = Prelude.Compat.map hexDigitToInt (TL.unpack text)
+
+fromTlshStr :: TL.Text -> Vector Int32
+fromTlshStr text = if TL.length text /= tlsh_string_len then Left "string has wrong length"
+                   else Right . fromHex $ text
                         -- return TLSH with fields
