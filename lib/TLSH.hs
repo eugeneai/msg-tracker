@@ -164,4 +164,69 @@ partition buf lfet right = do
       | otherwise = do
             return ret
 
-findQuartile tlsh quartiles
+-- findQuartile tlsh quartiles =
+
+
+
+data TLSH = TLSH { checksum :: IO (MVector (PrimState IO) Int16)
+                 , slideWindow :: IO (MVector (PrimState IO) Int16)
+                 , aBucket :: IO (MVector (PrimState IO) Int32)
+                 , dataLen :: IO (MVector (PrimState IO) Int16)
+                 , lValue :: IO (MVector (PrimState IO) Int16)
+                 , q :: IO (MVector (PrimState IO) Int16)
+                 , lshCodeValid :: IO (MVector (PrimState IO) Bool)
+                 , tmpCode :: IO (MVector (PrimState IO) Word8)
+                 , lshCode :: IO (MVector (PrimState IO) Word8)}
+
+
+empty :: TLSH
+empty = TLSH { checksum = M.replicate tlsh_checksum_length 0
+             , slideWindow = M.replicate slidingWndSize 0
+             , aBucket = M.replicate buckets 0
+             , dataLen = M.replicate 1 0
+             , tmpCode = M.replicate code_size 0
+             , lValue = M.replicate 1 0
+             , q = M.replicate 1 0
+             , lshCode = ""
+             , lshCodeValid = M.replicate 1 False}
+
+
+hash :: TLSH -> Either String TLSH
+hash tlsh = do
+  if not . lshCodeValid $ tlsh then do
+    return $ Left "ERROR IN PROCESSING"
+  else do
+    let tmp = empty
+    swapBytes (checksum tmp)
+    swapByte (lValue tmp)
+  where
+    swapBytes chksum = do
+      return chksum
+
+
+
+getQLo q = q .&. 0x0f
+getQHi q = shiftR (q .&. 0xf0) 4
+
+setQLo q x = (q .&. 0xf0) .|. (x .&. 0x0f)
+setQHi q x = (q .&. 0x0f) .|. ( shiftL (x .&. 0x0f) 4)
+
+totalDiff :: TLSH -> TLSH -> Int32
+totalDiff this other lenDiff =
+  if this == other then 0
+  else let diff = 0
+       in let diff = if lenDiff then
+                       let ldiff = modDiff (lValue this) (lValue other) range_lvalue
+                       in if ldiff == 0 then 0 else if ldiff == 1 then 1 else diff + ldiff*12
+                     else 0
+          in let q1diff = modDiff (getQLo . q $ this) (getQlo . q $ other) range_qratio
+             in let diff = diff + if q1diff <= 1 then q1diff else (q1diff - 1)*12
+                in let q2diff = modDiff (getQHi . q $ this) (getQHi . q $ other) range_qratio
+                   in let diff = diff + if q2diff <= 1 then q2diff else (q2diff - 1)*12
+                      in let diff = diff + microHamming (checksum this) (checksum other)
+                         in let diff = diff + hDistance code_size (tmpCode this) (tmpCode other)
+                            in diff
+
+fromTlshStr text = if TL.length text != tlsh_string_len then Left "string has wrong length"
+                   else fromHex text
+                        -- return TLSH with fields
