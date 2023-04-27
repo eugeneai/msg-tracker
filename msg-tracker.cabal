@@ -99,6 +99,7 @@ library
                  , murmur-hash
                  , text-metrics
                  , kyotocabinet
+                 , numhask
     -- Directories containing source files.
     hs-source-dirs:   lib
 

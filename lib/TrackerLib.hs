@@ -19,7 +19,12 @@ import qualified Data.UUID as U
 import qualified Data.UUID.V1 as U
 import Control.Monad.IO.Class
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
+-- https://gist.github.com/dino-/28b09c465c756c44b2c91d777408e166
 import qualified Data.Text.Lazy as TL
+import Data.Ratio (Ratio, numerator, denominator, (%))
+import GHC.Float.RealFracMethods (roundFloatInt)
+import Data.List (elem)
 -- import Data.Aeson
 import Prelude.Compat
     ( (++),
@@ -36,7 +41,9 @@ import Prelude.Compat
       snd,
       (.),
       id,
-      FilePath, putStrLn )
+      (*), (/), map,
+      FilePath, putStrLn, Float, Int, Integer,
+      fromIntegral)
 import GHC.Generics (Generic)
 import qualified Control.Monad.Extra as Ex
 import Web.Scotty
@@ -52,6 +59,10 @@ import qualified Database.KyotoCabinet.Operations as K
 import qualified Data.Array.Byte as BL
 import qualified Data.Aeson.Key as BL
 import Network.Email.Mailbox (MailboxReader(getMessages))
+import Network.Stream (ConnError(ErrorReset))
+import qualified Data.UUID as TL
+import NumHask (fromRatio)
+import Foreign (IntPtr(IntPtr))
 
 data Message = Answer
                {  msgid::U.UUID
@@ -65,6 +76,11 @@ data ErrorReport = Error
                  , description :: T.Text
                  , subsys:: T.Text
                  } deriving (Show, Eq, Generic)
+
+data Metric = Metric { mtype :: String -- Type of metric
+                     , msg :: [U.UUID]
+                     , value :: Int
+                     } deriving (Show, Eq, Generic)
 
 instance FromJSON Message
 instance FromJSON ErrorReport
@@ -80,6 +96,7 @@ instance FromJSON MM.Hash64 where
 
 instance ToJSON Message
 instance ToJSON ErrorReport
+instance ToJSON Metric
 
 instance ToJSON MM.Hash64 where
   toJSON :: MM.Hash64 -> Value
@@ -153,6 +170,7 @@ msgServer sto = do
       html $ mconcat ["<h1>Scotty, ", beam, " me up!!!</h1>"]
 
     -- Create new message an classify it, returning UUID and class
+    -- PUT --------------------------------------------
     put "/api-1.0/messages/" $ do
       b <- body
       let mm = fromHash . MM.hash64 $ b
@@ -176,6 +194,7 @@ msgServer sto = do
                                      description="Cannot generate an UUID",
                                      subsys="server"}
 
+    -- GET --------------------------------------------
     get "/api-1.0/message/uuid/:uuid" $ do
       uuid <- param $ "uuid"
       mtxt <- liftIO $ getMessage db uuid
@@ -185,6 +204,7 @@ msgServer sto = do
                                  subsys="storage"}
         Just msg -> raw . BL.fromStrict $ msg
 
+    -- GET --------------------------------------------
     get "/api-1.0/message/mm/:mm" $ do
       uuid <- param $ "mm"
       mmm <- liftIO $ getMurMur db $ uuid
@@ -199,6 +219,43 @@ msgServer sto = do
                                      description="Murmur has found, but uuid not",
                                      subsys="storage"}
             Just msg -> raw . BL.fromStrict $ msg
+
+    -- GET ---------------------------------------------
+    get "/api-1.0/:metric/:uuid1/:uuid2" $ do
+      uuid1 <- param "uuid1"
+      uuid2 <- param "uuid2"
+      met <- param "metric"
+      msg1 <- liftIO $ getMessage db uuid1
+      msg2 <- liftIO $ getMessage db uuid2
+      if met `elem` (map T.pack $ ["lev", "jaro", "jaccard"]) then
+        case msg1 of
+          Nothing -> do json $ err ("first" :: String)
+          Just mes1 -> do
+            case msg2 of
+              Nothing -> do json $ err ("second" :: String)
+              Just mes2 -> do
+                let val = case T.unpack met of
+                      "lev" -> (lnorm mes1 mes2) :: Ratio Int
+                      "jaro" -> (jnorm mes1 mes2) :: Ratio Int
+                      "jaccard" -> (janorm mes1 mes2) :: Ratio Int
+                      _ -> 0 % 0 :: Ratio Int
+                json $ Metric {mtype=T.unpack met, msg=[uuid1, uuid2], value=fromRatio_ val }
+      else json $ Error {description="Unknown metric", subsys="server", error="no-metric"}
+    where
+      fromRatio_ :: Ratio Int -> Int
+      fromRatio_ r = roundFloatInt $ 100 * ((fromIntegral $ numerator r) /
+                                            (fromIntegral $ denominator r))
+      lnorm :: BS.ByteString -> BS.ByteString -> Ratio Int
+      lnorm a b = Met.levenshteinNorm (cnv a) (cnv b)
+      jnorm a b = Met.jaro (cnv a) (cnv b)
+      janorm a b = Met.jaccard (cnv a) (cnv b)
+      cnv = T.decodeUtf8
+      err :: String -> ErrorReport
+      err p = Error {subsys="storage",
+                     description=T.pack $ mconcat
+                      ["No message identified by the ", p, " UUID"],
+                     error="no-message"}
+
 
 data KKResult = KKOK | KKError String deriving Show
 
