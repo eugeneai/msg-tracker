@@ -16,7 +16,7 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Text.Lazy.Encoding    as TLE
 
 import qualified Data.UUID as U
-import qualified Data.UUID.V1 as UU
+import qualified Data.UUID.V1 as U
 import Control.Monad.IO.Class
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -36,6 +36,7 @@ import qualified Database.KyotoCabinet.DB.Tree as K
 import qualified Database.KyotoCabinet.Operations as K
 import qualified Data.Array.Byte as BL
 import qualified Data.Aeson.Key as BL
+import Network.Email.Mailbox (MailboxReader(getMessages))
 
 data Message = Answer
                {  id::U.UUID
@@ -45,8 +46,8 @@ data Message = Answer
                } deriving (Show, Eq, Generic)
 
 data ErrorReport = Error
-                 {
-                   description :: T.Text
+                 { error :: T.Text
+                 , description :: T.Text
                  , subsys:: T.Text
                  } deriving (Show, Eq, Generic)
 
@@ -90,6 +91,12 @@ data Storages = Storages
                 , basePath :: FilePath
                 }
 
+instance Parsable U.UUID where
+  parseParam :: TL.Text -> Either TL.Text U.UUID
+  parseParam t = case U.fromText . TL.toStrict $ t of
+                   Nothing -> Left "param not an UUID"
+                   Just uuid -> Right uuid
+
 openHashDB :: FilePath -> DB db -> IO K.Hash
 openHashDB basePath (DBName name) = do
   let pathName = basePath ++ name
@@ -131,21 +138,36 @@ msgServer sto = do
       html $ mconcat ["<h1>Scotty, ", beam, " me up!!!</h1>"]
 
     -- Create new message an classify it, returning UUID and class
-    put "/messages/" $ do
+    put "/api-1.0/messages/" $ do
       b <- body
-      muuid <- liftIO $ UU.nextUUID
-      case muuid of
+      muuid <- liftIO $ U.nextUUID
+      let mm = MM.hash64 b
+      cmm <- liftIO $ checkMurMur db mm
+      -- liftIO $ print cmm
+      case cmm of
         Just uuid -> do
-          krc <- liftIO $ storeMessage db uuid b
-          case krc of
-            KKOK -> do
-              let answer = Answer {id=uuid, mm=MM.hash64 b}
+          json $ Error { error = "mm-exists",
+                         description="There is already such message",
+                         subsys= "storage"}
+        Nothing ->
+          case muuid of
+            Just uuid -> do
+              krc <- liftIO $ storeMessage db uuid b
+              mmrc <- liftIO $ storeMurMur db mm uuid
+              let answer = Answer {id=uuid, mm=mm}
               json answer
-            KKError e -> json $ Error {description=T.pack e, subsys="kyotocabinet"}
+            Nothing -> json $ Error {error="no-uuid",
+                                     description="Cannot generate an UUID",
+                                     subsys="server"}
 
-        Nothing -> json $ Error {
-          description="Cannot generate an UUID",
-          subsys="message saving"}
+    get "/api-1.0/message/uuid/:uuid" $ do
+      uuid <- param $ "uuid"
+      mtxt <- liftIO $ getMessage db uuid
+      case mtxt of
+        Nothing -> json $ Error {error="no-message",
+                                 description="There are no such message",
+                                 subsys="storage"}
+        Just msg -> raw . BL.fromStrict $ msg
 
 data KKResult = KKOK | KKError String deriving Show
 
@@ -161,6 +183,11 @@ storeMessage sto uuid msg = do
   return KKOK
   where
     k = BL.toStrict . U.toByteString $ uuid
+
+getMessage :: Storages -> U.UUID -> IO (Maybe BS.ByteString)
+getMessage sto uuid = do
+  K.get (db $ messages sto) k
+  where k = uuidToBS uuid
 
 storeMurMur :: Storages -> MM.Hash64 -> U.UUID -> IO ()
 storeMurMur sto mm uuid =
