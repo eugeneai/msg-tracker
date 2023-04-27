@@ -4,7 +4,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE InstanceSigs #-}
 
-module TrackerLib (msgServer) where
+module TrackerLib (msgServer, Storages(..), DB(..)) where
 
 import Web.Scotty
 import Network.Wai.Middleware.RequestLogger (logStdout, logStdoutDev)
@@ -31,6 +31,7 @@ import Data.Digest.Murmur64 (asWord64)
 import qualified Data.Text.Metrics as Met
 import qualified Control.Applicative as CA
 import qualified Database.KyotoCabinet.DB.Hash as K
+import qualified Database.KyotoCabinet.DB.Tree as K
 import qualified Database.KyotoCabinet.Operations as K
 import qualified Data.Array.Byte as BL
 
@@ -75,9 +76,48 @@ toHash uuid = MM.hash64AddWord64 (snd rc) h0
     rc = U.toWords64 uuid
     h0 = MM.hash64 BL.empty
 
-msgServer :: IO ()
-msgServer = do
-  db <- K.makeHash "messages.kch" K.defaultLoggingOptions K.defaultHashOptions (K.Writer [K.Create] [])
+
+data DB db = DB db | DBName String
+
+data Storages = Storages
+                {
+                  messages :: DB K.Hash
+                , murmurs :: DB K.Hash
+                , taxonomy :: DB K.Hash
+                , registryDates :: DB K.Tree
+                , basePath :: FilePath
+                }
+
+openHashDB :: FilePath -> DB db -> IO K.Hash
+openHashDB basePath (DBName name) = do
+  let pathName = basePath ++ name
+  K.makeHash pathName K.defaultLoggingOptions K.defaultHashOptions (K.Writer [K.Create] [])
+
+openTreeDB :: FilePath -> DB db -> IO K.Tree
+openTreeDB basePath (DBName name) = do
+  let pathName = basePath ++ name
+  K.makeTree pathName K.defaultLoggingOptions K.defaultTreeOptions (K.Writer [K.Create] [])
+
+openDatabases :: Storages -> IO Storages
+openDatabases sto = do
+  let bp = basePath sto
+  let oht = openHashDB bp
+      ott = openTreeDB bp
+  messages <- oht $ messages sto
+  murmurs <- oht $ murmurs sto
+  taxonomy <- oht $ taxonomy sto
+  registryDates <- ott $ registryDates sto
+
+  return $ Storages {
+      messages=DB messages
+    , murmurs=DB murmurs
+    , taxonomy=DB taxonomy
+    , registryDates=DB registryDates
+    , basePath = bp}
+
+msgServer :: Storages -> IO ()
+msgServer sto = do
+  db <- openDatabases sto
   scotty 3333 $ do
     middleware $ staticPolicy (noDots >-> addBase "static")
     -- Логирование всех запросов. Для продакшена используйте logStdout вместо logStdoutDev
@@ -107,8 +147,9 @@ msgServer = do
 
 data KKResult = KKOK | KKError String deriving Show
 
-storeMessage :: K.WithDB db => db -> U.UUID -> BL.ByteString -> IO KKResult
-storeMessage db key msg = do
+storeMessage :: Storages -> U.UUID -> BL.ByteString -> IO KKResult
+storeMessage sto key msg = do
+  let DB db = messages sto
   K.set db k (BL.toStrict msg)
   return KKOK
   where
