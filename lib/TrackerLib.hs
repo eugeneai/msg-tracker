@@ -12,6 +12,7 @@ import Network.Wai.Middleware.Static
 -- import qualified Data.Text.Internal.Lazy as T
 import qualified Data.Text as T
 import qualified Data.ByteString.Lazy.Char8 as BL
+import qualified Data.ByteString.Char8 as BS
 import Data.Text.Lazy.Encoding    as TLE
 
 import qualified Data.UUID as U
@@ -34,6 +35,7 @@ import qualified Database.KyotoCabinet.DB.Hash as K
 import qualified Database.KyotoCabinet.DB.Tree as K
 import qualified Database.KyotoCabinet.Operations as K
 import qualified Data.Array.Byte as BL
+import qualified Data.Aeson.Key as BL
 
 data Message = Answer
                {  id::U.UUID
@@ -77,7 +79,7 @@ toHash uuid = MM.hash64AddWord64 (snd rc) h0
     h0 = MM.hash64 BL.empty
 
 
-data DB db = DB db | DBName String
+data DB db = DB {db::db} | DBName String
 
 data Storages = Storages
                 {
@@ -147,10 +149,28 @@ msgServer sto = do
 
 data KKResult = KKOK | KKError String deriving Show
 
+uuidToBS :: U.UUID -> BS.ByteString
+uuidToBS = BL.toStrict . U.toByteString
+
+mmToBS :: MM.Hash64 -> BS.ByteString
+mmToBS = BS.pack . show . MM.asWord64
+
 storeMessage :: Storages -> U.UUID -> BL.ByteString -> IO KKResult
-storeMessage sto key msg = do
-  let DB db = messages sto
-  K.set db k (BL.toStrict msg)
+storeMessage sto uuid msg = do
+  K.set (db $ messages sto) k (BL.toStrict msg)
   return KKOK
   where
-    k = BL.toStrict . U.toByteString $ key
+    k = BL.toStrict . U.toByteString $ uuid
+
+storeMurMur :: Storages -> MM.Hash64 -> U.UUID -> IO ()
+storeMurMur sto mm uuid =
+  K.set (db $ murmurs sto) k uu
+  where
+    k = mmToBS mm
+    uu = uuidToBS uuid
+
+checkMurMur :: Storages -> MM.Hash64 -> IO (Maybe BS.ByteString)
+checkMurMur sto mm = do
+  K.get (db $ murmurs sto) k
+  where
+    k = mmToBS mm
