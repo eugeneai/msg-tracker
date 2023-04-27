@@ -226,6 +226,8 @@ totalDiff this other lenDiff =
                       in let diff = diff + microHamming (checksum this) (checksum other)
                          in let diff = diff + hDistance code_size (tmpCode this) (tmpCode other)
                             in diff
+  where
+    microHamming ch1 ch 2 = 1 -- TODO
 
 fromTlshStr text = if TL.length text != tlsh_string_len then Left "string has wrong length"
                    else fromHex text
