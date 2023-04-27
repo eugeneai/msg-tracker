@@ -25,6 +25,7 @@ import qualified Data.Text.Lazy as TL
 import Data.Ratio (Ratio, numerator, denominator, (%))
 import GHC.Float.RealFracMethods (roundFloatInt)
 import Data.List (elem)
+import TLSH (tlshText)
 -- import Data.Aeson
 import Prelude.Compat
     ( (++),
