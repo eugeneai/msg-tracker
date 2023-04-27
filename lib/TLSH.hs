@@ -105,26 +105,18 @@ bitPairsDiffTable = generate arraySize row
           d = 0
           diff =0
       in
-        let d = abs (x `mod` 4 - y `mod` 4)
-            diff = diff + if d == 3 then 6 else d
-            x = floorFloatInt (x/4)
-            y = floorFloatInt (y/4)
-        in
-          let d = abs (x `mod` 4 - y `mod` 4)
-              diff = diff + if d == 3 then 6 else d
-              x = floorFloatInt (x/4)
-              y = floorFloatInt (y/4)
-          in
-            let d = abs (x `mod` 4 - y `mod` 4)
-                diff = diff + if d == 3 then 6 else d
-                x = floorFloatInt (x/4)
-                y = floorFloatInt (y/4)
-            in
-              let d = abs (x `mod` 4 - y `mod` 4)
-                  diff = diff + if d == 3 then 6 else d
-                  x = floorFloatInt (x/4)
-                  y = floorFloatInt (y/4)
-              in diff
+        let a1 = stp (i, j, 0, 0)
+        in let a2 = stp a1
+           in let a3 = stp a2
+              in let (_,_,_,diff) = stp a23
+                 in diff
+    stp (x, y, d, diff) =
+      let d = abs (x `mod` 4 - y `mod` 4)
+          diff = diff + if d == 3 then 6 else d
+          x = floorFloatInt (x/4)
+          y = floorFloatInt (y/4)
+      in (x, y, d, diff)
+
 
 hDistance x y = s
   where
