@@ -19,9 +19,13 @@ import Data.Int (Int8, Int16, Int32, Int64)
 import qualified Data.ByteArray as BA
 import GHC.Integer (xorInteger)
 import Data.Word8 (Word8)
+import Data.Char ( ord ) 
+import qualified Data.List as L
 import qualified GHC.Types as G
 import GHC.Float.RealFracMethods (floorFloatInt)
 import Data.Text.Internal.Read (hexDigitToInt)
+import Control.Monad.IO.Class ( MonadIO(liftIO) )
+import Data.Vector.Mutable (MVector(MVector))
 -- import Data.Hex
 
 v_table :: Vector Word8
@@ -59,7 +63,8 @@ newtype Hash = Hash String
 tlshText :: TL.Text -> Hash
 tlshText t = Hash "2345"
 
-b_mapping :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
+-- b_mapping :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
+b_mapping :: Int16 -> Int16 -> Int16 -> Int16 -> Int16
 b_mapping salt i j k = h4
   where
     h4 = v_table ! xor h3 k
@@ -74,16 +79,14 @@ b_mapping salt i j k = h4
     -- h0 = 0
 
 
-l_capturing :: Float -> Int16
-l_capturing len = (q len) .&. (255::Int16)
-  where
-    q len
-      | len <= 656 = floorFloatInt (log len / log_1_5)
-      | len <= 3199 = floorFloatInt (log len / log_1_3 - 8.72777)
-      | otherwise = floorFloatInt (log len / log_1_1 - 62.5472)
+lCapturing :: Int16 -> Int
+lCapturing len
+  | len <= 656 = floorFloatInt (log . fromIntegral $ len / fromIntegral log_1_5)
+  | len <= 3199 = floorFloatInt (log . fromIntegral $ len / fromIntegral (log_1_3 - 8.72777))
+  | otherwise = floorFloatInt (fromIntegral . log $ len / fromIntegral(log_1_1 - 62.5472))
 
-swap_byte :: Int16 -> Int16
-swap_byte i = a .|. b
+swapByte :: Word8 -> Word8
+swapByte i = a .|. b
   where
     a = (shiftR (i .&. 0xf0) 4) .&. 0x0f
     b = (shiftL (i .&. 0x0f) 4) .&. 0xf0
@@ -91,10 +94,7 @@ swap_byte i = a .|. b
 -- toHex
 -- fromHex
 
-modDiff x y r = if dl>dr then dr else dl
-  where
-    (dl, dr) = if x > y then (y-x, x+r-y) else (x-y, y+r-x)
-
+arraySize :: Int
 arraySize = 256
 bitPairsDiffTable :: Vector (Vector Int16)
 bitPairsDiffTable = generate arraySize row
@@ -109,79 +109,92 @@ bitPairsDiffTable = generate arraySize row
         let a1 = stp (i, j, 0, 0)
         in let a2 = stp a1
            in let a3 = stp a2
-              in let (_,_,_,diff) = stp a23
+              in let (_,_,_,diff) = stp a3
                  in diff
     stp (x, y, d, diff) =
       let d = abs (x `mod` 4 - y `mod` 4)
           diff = diff + if d == 3 then 6 else d
-          x = floorFloatInt (x/4)
-          y = floorFloatInt (y/4)
+          x = shiftR x 2
+          y = shiftR y 2
+--          x = floorFloatInt (x/4)
+--          y = floorFloatInt (y/4)
       in (x, y, d, diff)
 
 
+hDistance :: M.MVector (M.PrimState IO) Word8 -> 
+             M.MVector (M.PrimState IO) Word8 -> 
+             Int16
 hDistance x y = s
   where
-    s = TL.foldr sum 0 $ TL.zip x y
-    sum (a,b) acc = acc + (bitPairsDiffTable ! b) ! a
+    s = L.foldr sumGo 0 (M.zip x y)
+    sumGo (a, b) agg = agg + (bitPairsDiffTable ! (ord b)) ! (ord a)
 
+sliding_wnd_size :: Int
 sliding_wnd_size = 5
+rng_size :: Int
 rng_size = sliding_wnd_size
+rng_idx :: Int -> Int
 rng_idx i = i+rng_size `mod` rng_size
+tlsh_checksum_len :: Int
 tlsh_checksum_len = 1
+buckets :: Int
 buckets = 256
+eff_buckets :: Int
 eff_buckets = 128
+code_size :: Int
 code_size = 32   -- 128 * 2 bits = 32 bytes
+tlsh_string_len :: Int64
 tlsh_string_len = 70  -- 2 + 1 + 32 bytes = 70 hexidecimal chars
+range_lvalue :: Word8
 range_lvalue = 256
+range_qratio :: Word8
 range_qratio = 16
 
-swapUnit buf x y = do
-  M.swap buf x y
-
-partition buf lfet right = do
+partition :: M.MVector (M.PrimState IO) Int16 -> Int -> Int -> IO Int
+partition buf left right = do
   if left == right then do return left
     else if (left+1) == right then do
-      swapUnit buf left rigth
+      M.swap buf left right
       return left
     else do
       let ret = left
           pivot = shiftR (left + right) 1
-          val = M.read buf pivot
-
-      nret <- permuteGo val left rigth ret left
+      val <- M.read buf pivot
+      nret <- permuteGo val left right (pure ret) left
       nretval <- M.read buf nret
       M.write buf right nretval
       M.write buf nret val
+      return nret
   where
-    permuteGo val l r ret i
-      | i < r = do
-          iv <- M.read buf i
-          if iv<val then do
-            swapUnit buf ret i
-            return $ permuteGo val l r (ret+1) (i+1)
-          else do
-            return $ permuteGo val l r ret (i+1)
-      | otherwise = do
-            return ret
+    permuteGo :: Int16 -> Int -> Int -> IO Int -> Int -> IO Int
+    permuteGo val l r mret i = do
+      ret <- mret 
+      if i < r then do
+        iv <- M.read buf i
+        if iv<val then do
+          M.swap buf ret i
+          permuteGo val l r (pure (ret+1)) (i+1)
+        else do
+          permuteGo val l r (pure ret) (i+1)
+      else do
+        return ret
 
 -- findQuartile tlsh quartiles =
 
-
-
-data TLSH = TLSH { checksum :: IO (MVector (M.PrimState IO) Int16)
-                 , slideWindow :: IO (MVector (M.PrimState IO) Int16)
-                 , aBucket :: IO (MVector (M.PrimState IO) Int32)
-                 , dataLen :: IO (MVector (M.PrimState IO) Int16)
-                 , lValue :: IO (MVector (M.PrimState IO) Int16)
-                 , q :: IO (MVector (M.PrimState IO) Int16)
-                 , lshCodeValid :: IO (MVector (M.PrimState IO) Bool)
-                 , tmpCode :: IO (MVector (M.PrimState IO) Word8)
-                 , lshCode :: IO (MVector (M.PrimState IO) Word8)}
+data TLSH = TLSH { checksum :: IO (M.MVector (M.PrimState IO) Int16)
+                 , slideWindow :: IO (M.MVector (M.PrimState IO) Int16)
+                 , aBucket :: IO (M.MVector (M.PrimState IO) Int32)
+                 , dataLen :: IO (M.MVector (M.PrimState IO) Int16)
+                 , lValue :: IO (M.MVector (M.PrimState IO) Word8)
+                 , q :: IO (M.MVector (M.PrimState IO) Word8)
+                 , lshCodeValid :: IO (M.MVector (M.PrimState IO) Bool)
+                 , tmpCode :: IO (M.MVector (M.PrimState IO) Word8)
+                 , lshCode :: IO (M.MVector (M.PrimState IO) Word8)}
 
 
 emptyTlsh :: TLSH
-emptyTlsh = TLSH { checksum = M.replicate tlsh_checksum_length 0
-                 , slideWindow = M.replicate slidingWndSize 0
+emptyTlsh = TLSH { checksum = M.replicate tlsh_checksum_len 0
+                 , slideWindow = M.replicate sliding_wnd_size 0
                  , aBucket = M.replicate buckets 0
                  , dataLen = M.replicate 1 0
                  , tmpCode = M.replicate code_size 0
@@ -191,27 +204,90 @@ emptyTlsh = TLSH { checksum = M.replicate tlsh_checksum_length 0
                  , lshCodeValid = M.replicate 1 False}
 
 
-hash :: TLSH -> Either String TLSH
+hash :: TLSH -> IO (Either String TLSH)
 hash tlsh = do
-  if not . lshCodeValid $ tlsh then do
+  bcv <- liftIO $ lshCodeValid tlsh
+  cv <- M.read bcv 0
+  if not cv then do
     return $ Left "ERROR IN PROCESSING"
   else do
     let tmp = emptyTlsh
-    swapBytes (checksum tmp)
-    swapByte (lValue tmp)
+    _ <- swapBytes tlsh tmp lValue
+    _ <- swapBytes tlsh tmp q
+    _ <- copyCode tlsh tmp 
+    -- synthesize hash by portions
+    return $ Right tlsh
   where
-    swapBytes chksum = do
-      return chksum
+    swapBytes :: TLSH -> TLSH ->
+                 (TLSH -> IO (M.MVector (M.PrimState IO) Word8)) -> IO ()
+    swapBytes this tmp selector = do
+      th <- liftIO $ selector this 
+      tm <- liftIO $ selector tmp
+      swapBytesGo th tm (M.length th)
 
+    swapBytesGo :: M.MVector (M.PrimState IO) Word8 -> 
+                   M.MVector (M.PrimState IO) Word8 -> 
+                   Int -> IO ()
+    swapBytesGo a b n 
+      | n > 0 = do 
+        av <- M.read a n 
+        let bv = swapByte av
+        M.write b n bv 
+        swapBytesGo a b (n-1)
+      | otherwise = do pure ()
 
+    copyCode :: TLSH -> TLSH -> IO ()
+    copyCode this tmp = do
+      th <- tmpCode this 
+      tm <- tmpCode tmp
+      copyCodeGo th tm 0
 
+    copyCodeGo :: M.MVector (M.PrimState IO) Word8 -> 
+                  M.MVector (M.PrimState IO) Word8 -> 
+                  Int -> IO ()
+    copyCodeGo a b n 
+      | n > 0 = do 
+        av <- M.read a n 
+        M.write b (code_size - 1 - n) av 
+        copyCodeGo a b (n-1)
+      | otherwise = do pure ()
+
+{-
+
+    this.lsh_code = to_hex(tmp.checksum, TLSH_CHECKSUM_LEN);
+
+    let tmpArray = new Uint8Array(1);
+    tmpArray[0] = tmp.Lvalue;
+    this.lsh_code = this.lsh_code.concat(to_hex(tmpArray, 1));
+
+    tmpArray[0] = tmp.Q;
+    this.lsh_code = this.lsh_code.concat(to_hex(tmpArray, 1));
+    this.lsh_code = this.lsh_code.concat(to_hex(tmp.tmp_code, CODE_SIZE));
+    return this.lsh_code;
+-}
+
+getQLo :: (Bits a, Num a) => a -> a
 getQLo q = q .&. 0x0f
+getQHi :: (Bits a, Num a) => a -> a
 getQHi q = shiftR (q .&. 0xf0) 4
 
+setQLo :: (Bits a, Num a) => a -> a -> a
 setQLo q x = (q .&. 0xf0) .|. (x .&. 0x0f)
+setQHi :: (Bits a, Num a) => a -> a -> a
 setQHi q x = (q .&. 0x0f) .|. ( shiftL (x .&. 0x0f) 4)
 
-totalDiff :: TLSH -> TLSH -> Int32
+modDiff :: IO (M.MVector (M.PrimState IO) Word8) -> 
+           IO (M.MVector (M.PrimState IO) Word8) -> Word8 -> IO Word8
+modDiff vmx vmy r = do
+  mx <- vmx
+  my <- vmy
+  x <- M.read mx 0 
+  y <- M.read my 0 
+  let (dl, dr) = if x > y then (y-x, x+r-y) else (x-y, y+r-x)
+  if dl>dr then return dr else return dl
+
+
+totalDiff :: TLSH -> TLSH -> Bool -> Int16
 totalDiff this other lenDiff =
   if this == other then 0
   else let diff = 0
@@ -219,19 +295,20 @@ totalDiff this other lenDiff =
                        let ldiff = modDiff (lValue this) (lValue other) range_lvalue
                        in if ldiff == 0 then 0 else if ldiff == 1 then 1 else diff + ldiff*12
                      else 0
-          in let q1diff = modDiff (getQLo . q $ this) (getQlo . q $ other) range_qratio
+          in let q1diff = modDiff (getQLo . q $ this) (getQLo . q $ other) range_qratio
              in let diff = diff + if q1diff <= 1 then q1diff else (q1diff - 1)*12
                 in let q2diff = modDiff (getQHi . q $ this) (getQHi . q $ other) range_qratio
                    in let diff = diff + if q2diff <= 1 then q2diff else (q2diff - 1)*12
                       in let diff = diff + microHamming (checksum this) (checksum other)
-                         in let diff = diff + hDistance code_size (tmpCode this) (tmpCode other)
+                         in let diff = diff + hDistance (tmpCode this) (tmpCode other)
                             in diff
   where
     microHamming ch1 ch 2 = 1 -- TODO
 
-fromHex text = Prelude.Compat.map hexDigitToInt (TL.unpack text)
+fromHex :: Text -> Vector Int32
+fromHex text = fromList $ Prelude.Compat.map hexDigitToInt (TL.unpack text)
 
-fromTlshStr :: TL.Text -> Vector Int32
+fromTlshStr :: TL.Text -> Either String (Vector Int32)
 fromTlshStr text = if TL.length text /= tlsh_string_len then Left "string has wrong length"
                    else Right . fromHex $ text
                         -- return TLSH with fields

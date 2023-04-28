@@ -291,3 +291,5 @@ getMurMur sto mm = do
   return $ U.fromByteString . maybe "" BL.fromStrict $ uuidStr
   where
     k = uuidToBS mm
+
+
