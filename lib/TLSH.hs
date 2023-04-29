@@ -19,7 +19,7 @@ import Data.Int (Int8, Int16, Int32, Int64)
 import qualified Data.ByteArray as BA
 import GHC.Integer (xorInteger)
 import Data.Word8 (Word8)
-import Data.Char ( ord ) 
+import Data.Char ( ord )
 import qualified Data.List as L
 import qualified GHC.Types as G
 import GHC.Float.RealFracMethods (floorFloatInt)
@@ -28,8 +28,8 @@ import Control.Monad.IO.Class ( MonadIO(liftIO) )
 import Data.Vector.Mutable (MVector(MVector))
 -- import Data.Hex
 
-v_table :: Vector Word8
-v_table = fromList [
+vTable :: Vector Word8
+vTable = fromList [
     1, 87, 49, 12, 176, 178, 102, 166, 121, 193, 6, 84, 249, 230, 44, 163,
     14, 197, 213, 181, 161, 85, 218, 80, 64, 239, 24, 226, 236, 142, 38, 200,
     110, 177, 104, 103, 141, 253, 255, 50, 77, 101, 81, 18, 45, 96, 31, 222,
@@ -63,27 +63,28 @@ newtype Hash = Hash String
 tlshText :: TL.Text -> Hash
 tlshText t = Hash "2345"
 
--- b_mapping :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
-b_mapping :: Int16 -> Int16 -> Int16 -> Int16 -> Int16
-b_mapping salt i j k = h4
+-- b_mapping :: Word8 -> Word8 -> Word8 -> Word8 -> Int16
+bMapping :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
+-- bMapping :: Int16 -> Int16 -> Int16 -> Int16 -> Int16
+-- bMapping :: Int -> Int -> Int -> Int -> Int
+bMapping salt i j k = h4
   where
-    h4 = v_table ! xor h3 k
-    h3 = v_table ! xor h2 j
-    h2 = v_table ! xor h1 i
-    h1 = v_table ! xor h0 salt
+    h4 = go h3 k
+    h3 = go h2 j
+    h2 = go h1 i
+    h1 = go h0 salt
     h0 = 0
-    -- h4 = BA.index v_table $ xor h3 k
-    -- h3 = BA.index v_table $ xor h2 j
-    -- h2 = BA.index v_table $ xor h1 i
-    -- h1 = BA.index v_table $ xor h0 salt
-    -- h0 = 0
+    go a b = vTable ! (fromEnum $ xor a b)
 
 
-lCapturing :: Int16 -> Int
+lCapturing :: Int16 -> Int16
 lCapturing len
-  | len <= 656 = floorFloatInt (log . fromIntegral $ len / fromIntegral log_1_5)
-  | len <= 3199 = floorFloatInt (log . fromIntegral $ len / fromIntegral (log_1_3 - 8.72777))
-  | otherwise = floorFloatInt (fromIntegral . log $ len / fromIntegral(log_1_1 - 62.5472))
+  | len <= 656 = fun len log_1_5 0.0
+  | len <= 3199 = fun len log_1_3 8.72777
+  | otherwise = fun len log_1_1 62.5472
+  where
+    fun :: Int16 -> Float -> Float -> Int16
+    fun len logc sub = toEnum . floorFloatInt $ (log . fromIntegral $ len) / logc - sub
 
 swapByte :: Word8 -> Word8
 swapByte i = a .|. b
@@ -93,13 +94,21 @@ swapByte i = a .|. b
 
 -- toHex
 -- fromHex
+type V_16 = Vector Int16
+
+-- instance Unbox V_16 where
+
 
 arraySize :: Int
 arraySize = 256
+
+-- TODO repa package to see
+
 bitPairsDiffTable :: Vector (Vector Int16)
 bitPairsDiffTable = generate arraySize row
   where
     row i = generate arraySize (col i)
+    col :: Int -> Int -> Int16
     col i j =
       let x = i
           y = j
@@ -110,7 +119,8 @@ bitPairsDiffTable = generate arraySize row
         in let a2 = stp a1
            in let a3 = stp a2
               in let (_,_,_,diff) = stp a3
-                 in diff
+                 in toEnum diff
+    stp :: (Int, Int, Int, Int) -> (Int, Int, Int, Int)
     stp (x, y, d, diff) =
       let d = abs (x `mod` 4 - y `mod` 4)
           diff = diff + if d == 3 then 6 else d
@@ -121,13 +131,16 @@ bitPairsDiffTable = generate arraySize row
       in (x, y, d, diff)
 
 
-hDistance :: M.MVector (M.PrimState IO) Word8 -> 
-             M.MVector (M.PrimState IO) Word8 -> 
+hDistance :: M.MVector (M.PrimState IO) Word8 ->
+             M.MVector (M.PrimState IO) Word8 ->
              Int16
-hDistance x y = s
+hDistance x y = do s
   where
     s = L.foldr sumGo 0 (M.zip x y)
-    sumGo (a, b) agg = agg + (bitPairsDiffTable ! (ord b)) ! (ord a)
+    sumGo :: (Word8, Word8) -> Int16 -> Int16
+    sumGo (a, b) agg = agg + (bitPairsDiffTable ! (o b)) ! (o a)
+    o :: Word8 -> Int
+    o = fromEnum
 
 sliding_wnd_size :: Int
 sliding_wnd_size = 5
@@ -168,7 +181,7 @@ partition buf left right = do
   where
     permuteGo :: Int16 -> Int -> Int -> IO Int -> Int -> IO Int
     permuteGo val l r mret i = do
-      ret <- mret 
+      ret <- mret
       if i < r then do
         iv <- M.read buf i
         if iv<val then do
@@ -214,41 +227,41 @@ hash tlsh = do
     let tmp = emptyTlsh
     _ <- swapBytes tlsh tmp lValue
     _ <- swapBytes tlsh tmp q
-    _ <- copyCode tlsh tmp 
+    _ <- copyCode tlsh tmp
     -- synthesize hash by portions
     return $ Right tlsh
   where
     swapBytes :: TLSH -> TLSH ->
                  (TLSH -> IO (M.MVector (M.PrimState IO) Word8)) -> IO ()
     swapBytes this tmp selector = do
-      th <- liftIO $ selector this 
+      th <- liftIO $ selector this
       tm <- liftIO $ selector tmp
       swapBytesGo th tm (M.length th)
 
-    swapBytesGo :: M.MVector (M.PrimState IO) Word8 -> 
-                   M.MVector (M.PrimState IO) Word8 -> 
+    swapBytesGo :: M.MVector (M.PrimState IO) Word8 ->
+                   M.MVector (M.PrimState IO) Word8 ->
                    Int -> IO ()
-    swapBytesGo a b n 
-      | n > 0 = do 
-        av <- M.read a n 
+    swapBytesGo a b n
+      | n > 0 = do
+        av <- M.read a n
         let bv = swapByte av
-        M.write b n bv 
+        M.write b n bv
         swapBytesGo a b (n-1)
       | otherwise = do pure ()
 
     copyCode :: TLSH -> TLSH -> IO ()
     copyCode this tmp = do
-      th <- tmpCode this 
+      th <- tmpCode this
       tm <- tmpCode tmp
       copyCodeGo th tm 0
 
-    copyCodeGo :: M.MVector (M.PrimState IO) Word8 -> 
-                  M.MVector (M.PrimState IO) Word8 -> 
+    copyCodeGo :: M.MVector (M.PrimState IO) Word8 ->
+                  M.MVector (M.PrimState IO) Word8 ->
                   Int -> IO ()
-    copyCodeGo a b n 
-      | n > 0 = do 
-        av <- M.read a n 
-        M.write b (code_size - 1 - n) av 
+    copyCodeGo a b n
+      | n > 0 = do
+        av <- M.read a n
+        M.write b (code_size - 1 - n) av
         copyCodeGo a b (n-1)
       | otherwise = do pure ()
 
@@ -276,18 +289,18 @@ setQLo q x = (q .&. 0xf0) .|. (x .&. 0x0f)
 setQHi :: (Bits a, Num a) => a -> a -> a
 setQHi q x = (q .&. 0x0f) .|. ( shiftL (x .&. 0x0f) 4)
 
-modDiff :: IO (M.MVector (M.PrimState IO) Word8) -> 
+modDiff :: IO (M.MVector (M.PrimState IO) Word8) ->
            IO (M.MVector (M.PrimState IO) Word8) -> Word8 -> IO Word8
 modDiff vmx vmy r = do
   mx <- vmx
   my <- vmy
-  x <- M.read mx 0 
-  y <- M.read my 0 
+  x <- M.read mx 0
+  y <- M.read my 0
   let (dl, dr) = if x > y then (y-x, x+r-y) else (x-y, y+r-x)
   if dl>dr then return dr else return dl
 
 
-totalDiff :: TLSH -> TLSH -> Bool -> Int16
+totalDiff :: TLSH -> TLSH -> Bool -> Int
 totalDiff this other lenDiff =
   if this == other then 0
   else let diff = 0
@@ -300,15 +313,25 @@ totalDiff this other lenDiff =
                 in let q2diff = modDiff (getQHi . q $ this) (getQHi . q $ other) range_qratio
                    in let diff = diff + if q2diff <= 1 then q2diff else (q2diff - 1)*12
                       in let diff = diff + microHamming (checksum this) (checksum other)
-                         in let diff = diff + hDistance (tmpCode this) (tmpCode other)
-                            in diff
+                         in let diff = diff + hDist (tmpCode this) (tmpCode other)
+                            in toEnum $ maybe 0 id diff
   where
+    hDist :: IO (M.MVector (M.PrimState IO) Word8) ->
+             IO (M.MVector (M.PrimState IO) Word8) ->
+             Maybe Int
+    hDist ma mb = do
+      a <- liftIO $ ma
+      b <- liftIO $ mb
+      return . fromEnum $ hDistance a b
+
     microHamming ch1 ch 2 = 1 -- TODO
 
-fromHex :: Text -> Vector Int32
-fromHex text = fromList $ Prelude.Compat.map hexDigitToInt (TL.unpack text)
+fromHex :: Text -> Vector Int16
+fromHex text = fromList $ Prelude.Compat.map goHd (TL.unpack text)
+  where
+    goHd = toEnum . hexDigitToInt
 
-fromTlshStr :: TL.Text -> Either String (Vector Int32)
+fromTlshStr :: TL.Text -> Either String (Vector Int16)
 fromTlshStr text = if TL.length text /= tlsh_string_len then Left "string has wrong length"
                    else Right . fromHex $ text
                         -- return TLSH with fields
