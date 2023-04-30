@@ -6,27 +6,92 @@
 
 module TLSH
   (
-    tlshText
+    -- tlshText
   )
   where
 
 import Prelude.Compat
 import Data.Bits ( Bits(..) )
-import qualified Data.Vector.Unboxed.Mutable as M
-import Data.Vector.Unboxed
-import Data.Text.Lazy as TL
+import Data.Vector
+import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as M
+-- import Data.Text.Lazy as TL
 import Data.Int (Int8, Int16, Int32, Int64)
 import qualified Data.ByteArray as BA
 import GHC.Integer (xorInteger)
 import Data.Word8 (Word8)
 import Data.Char ( ord )
 import qualified Data.List as L
-import qualified GHC.Types as G
 import GHC.Float.RealFracMethods (floorFloatInt)
 import Data.Text.Internal.Read (hexDigitToInt)
 import Control.Monad.IO.Class ( MonadIO(liftIO) )
-import Data.Vector.Mutable (MVector(MVector))
+import Data.ByteString.Lazy.Char8 as BL
+import Crypto.Hash (hash)
+import Data.Aeson.Decoding.ByteString (bsToTokens)
+import Control.Monad.ST (ST, runST)
 -- import Data.Hex
+
+type Bucket = Vector Word8
+
+data TlshContext = Tc { bucket :: Bucket
+                      , qs :: [Int]
+                      , checksum :: Int
+                      }
+
+instance Show TlshContext where
+  show :: TlshContext -> String
+  show (Tc bu qs ch) = L.concat [showBu bu,
+                                 " ", (show qs), " ", (show ch)]
+
+showBu :: Vector Word8 -> String
+showBu bu =
+  let s = V.foldr fbu "" bu
+  in s
+  where
+    fbu :: Word8 -> String -> String
+    fbu e s = L.concat [show e, ", ", s]
+
+instance Eq TlshContext where
+  (==) :: TlshContext -> TlshContext -> Bool
+  (==) a b = (bucket a) == (bucket b)
+
+data Tlsh = Tlsh TlshContext
+          deriving (Show, Eq)
+
+hashBlockSize :: Int
+hashBlockSize = 5
+hashInit :: TlshContext
+hashInit = Tc { bucket = (V.replicate buckets 0),
+                qs = [0,0,0], checksum = 0}
+
+hashUpdate :: TlshContext -> ByteString -> TlshContext
+hashUpdate context byteString =
+  let tmp = L.foldl updateGo context
+                    (zipg hashBlockSize byteString) :: TlshContext
+  in updateQuartiles tmp
+  where
+    zipg :: Int -> BL.ByteString -> [BL.ByteString]
+    zipg n bs = L.filter (\str -> BL.length str == (toEnum n)) $ zipg' n bs
+    zipg' :: Int -> BL.ByteString -> [BL.ByteString]
+    zipg' n bs = (BL.take (toEnum n) bs):zipg n (BL.tail bs)
+
+    updateGo :: TlshContext -> BL.ByteString -> TlshContext
+    updateGo c bs = do
+      let b = bucket c
+      let ubu = L.foldr (upd bs) b [1..6]
+      let ncs = BL.foldr (\x prev -> prev + (fromEnum . ord $ x))
+                         (checksum c) bs
+      Tc {bucket = (bucket c), qs = (qs c), checksum=ncs}
+
+    upd :: BL.ByteString -> Int -> Bucket -> Bucket
+    --upd bs i b = V.modify b (\el -> V.modify el (\v -> v+1)) (triplet bs i)
+    upd bs i b = V.modify b (\el -> M.write el 0 (1::Word8)) (triplet bs i)
+
+    updateQuartiles:: TlshContext -> TlshContext
+    updateQuartiles c = c -- TODO Implement updateQuartiles
+
+triplet :: BL.ByteString -> Int -> Int
+triplet bs num = num -- TODO: Implement
 
 vTable :: Vector Word8
 vTable = fromList [
@@ -58,15 +123,10 @@ log_1_3 = 0.26236426
 log_1_1 :: Float
 log_1_1 = 0.095310180
 
-newtype Hash = Hash String
+-- tlshText :: TL.Text -> Hash
+-- tlshText t = Hash "2345"
 
-tlshText :: TL.Text -> Hash
-tlshText t = Hash "2345"
-
--- b_mapping :: Word8 -> Word8 -> Word8 -> Word8 -> Int16
 bMapping :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
--- bMapping :: Int16 -> Int16 -> Int16 -> Int16 -> Int16
--- bMapping :: Int -> Int -> Int -> Int -> Int
 bMapping salt i j k = h4
   where
     h4 = go h3 k
@@ -75,7 +135,6 @@ bMapping salt i j k = h4
     h1 = go h0 salt
     h0 = 0
     go a b = vTable ! (fromEnum $ xor a b)
-
 
 lCapturing :: Int16 -> Int16
 lCapturing len
@@ -92,12 +151,7 @@ swapByte i = a .|. b
     a = (shiftR (i .&. 0xf0) 4) .&. 0x0f
     b = (shiftL (i .&. 0x0f) 4) .&. 0xf0
 
--- toHex
--- fromHex
 type V_16 = Vector Int16
-
--- instance Unbox V_16 where
-
 
 arraySize :: Int
 arraySize = 256
@@ -126,21 +180,20 @@ bitPairsDiffTable = generate arraySize row
           diff = diff + if d == 3 then 6 else d
           x = shiftR x 2
           y = shiftR y 2
---          x = floorFloatInt (x/4)
---          y = floorFloatInt (y/4)
       in (x, y, d, diff)
 
 
-hDistance :: M.MVector (M.PrimState IO) Word8 ->
-             M.MVector (M.PrimState IO) Word8 ->
+hDistance :: Bucket ->
+             Bucket ->
              Int16
 hDistance x y = do s
   where
-    s = L.foldr sumGo 0 (M.zip x y)
+    s = L.foldr sumGo 0 (zipGo x y)
     sumGo :: (Word8, Word8) -> Int16 -> Int16
     sumGo (a, b) agg = agg + (bitPairsDiffTable ! (o b)) ! (o a)
     o :: Word8 -> Int
     o = fromEnum
+    zipGo _ _ = [(1,1)]
 
 sliding_wnd_size :: Int
 sliding_wnd_size = 5
@@ -162,8 +215,8 @@ range_lvalue :: Word8
 range_lvalue = 256
 range_qratio :: Word8
 range_qratio = 16
-
-partition :: M.MVector (M.PrimState IO) Int16 -> Int -> Int -> IO Int
+{-
+partition :: Vector Int16 -> Int -> Int -> Int
 partition buf left right = do
   if left == right then do return left
     else if (left+1) == right then do
@@ -192,7 +245,26 @@ partition buf left right = do
       else do
         return ret
 
--- findQuartile tlsh quartiles =
+
+findQuartile tlsh quartiles = do
+  shotcutLeft <- liftIO $ M.replicate eff_buckets (0 :: Int16) -- Int32
+  shotcutRight <- liftIO $ M.replicate eff_buckets (0 :: Int16) -- Int32
+  let spl = 0
+      spr = 0
+      p1 = shiftR eff_buckets 2 - 1
+      p2 = shiftR eff_buckets 1 - 1
+      p3 = eff_buckets - (shiftR eff_buckets 2) - 1
+      end = eff_buckets - 1
+  buf <- M.generate eff_buckets (copyGo $ aBucket tlsh)-- Int32
+
+  splitP2 buf shortcutLeft shortcutRight p2 end 0
+
+  where
+    copyGo iobuf i = do
+      buf <- iobuf
+      M.read buf i
+    splitP2 buf left rigth p2 end i
+      | i > end
 
 data TLSH = TLSH { checksum :: IO (M.MVector (M.PrimState IO) Int16)
                  , slideWindow :: IO (M.MVector (M.PrimState IO) Int16)
@@ -213,7 +285,7 @@ emptyTlsh = TLSH { checksum = M.replicate tlsh_checksum_len 0
                  , tmpCode = M.replicate code_size 0
                  , lValue = M.replicate 1 0
                  , q = M.replicate 1 0
-                 , lshCode = ""
+                 , lshCode = M.replicate 1 0
                  , lshCodeValid = M.replicate 1 False}
 
 
@@ -335,3 +407,4 @@ fromTlshStr :: TL.Text -> Either String (Vector Int16)
 fromTlshStr text = if TL.length text /= tlsh_string_len then Left "string has wrong length"
                    else Right . fromHex $ text
                         -- return TLSH with fields
+-}

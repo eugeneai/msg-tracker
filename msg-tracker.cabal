@@ -104,6 +104,7 @@ library
                  , memory
                  , word8
                  , ghc-prim
+                 , cryptohash
                  -- , haskell-hex
     -- Directories containing source files.
     hs-source-dirs:   lib
