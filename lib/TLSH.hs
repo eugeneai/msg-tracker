@@ -6,7 +6,7 @@
 
 module TLSH
   (
-    -- tlshText
+    hashUpdate
   )
   where
 
@@ -84,8 +84,8 @@ hashUpdate context byteString =
       Tc {bucket = (bucket c), qs = (qs c), checksum=ncs}
 
     upd :: BL.ByteString -> Int -> Bucket -> Bucket
-    --upd bs i b = V.modify b (\el -> V.modify el (\v -> v+1)) (triplet bs i)
-    upd bs i b = V.modify b (\el -> M.write el 0 (1::Word8)) (triplet bs i)
+    upd bs i b = V.modify (\el -> M.modify el (\v -> v+1) (triplet bs i)) b
+    -- upd bs i b = V.modify b (\el -> M.write el 0 (1::Word8)) (triplet bs i)
 
     updateQuartiles:: TlshContext -> TlshContext
     updateQuartiles c = c -- TODO Implement updateQuartiles

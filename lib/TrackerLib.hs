@@ -25,7 +25,7 @@ import qualified Data.Text.Lazy as TL
 import Data.Ratio (Ratio, numerator, denominator, (%))
 import GHC.Float.RealFracMethods (roundFloatInt)
 import Data.List (elem)
-import TLSH (tlshText)
+import TLSH (hashUpdate)
 -- import Data.Aeson
 import Prelude.Compat
     ( (++),
@@ -291,5 +291,3 @@ getMurMur sto mm = do
   return $ U.fromByteString . maybe "" BL.fromStrict $ uuidStr
   where
     k = uuidToBS mm
-
-
