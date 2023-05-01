@@ -25,7 +25,10 @@ import qualified Data.Text.Lazy as TL
 import Data.Ratio (Ratio, numerator, denominator, (%))
 import GHC.Float.RealFracMethods (roundFloatInt)
 import Data.List (elem)
-import TLSH (hashUpdate)
+import TLSH (tlshHash
+            , tlshUpdate
+            , tlshFinalize
+            )
 -- import Data.Aeson
 import Prelude.Compat
     ( (++),
@@ -177,7 +180,9 @@ msgServer sto = do
       let mm = fromHash . MM.hash64 $ b
       -- liftIO $ putStrLn $ "Cmurmur" ++ show mm
       cmm <- liftIO $ getMurMur db mm
-      -- liftIO $ putStrLn $ "Gmurmur" ++ show cmm
+      let tlsh = tlshHash b
+      liftIO $ putStrLn $ show $ BL.length b
+      liftIO $ putStrLn $ "TLSH: " ++ show tlsh
       case cmm of
         Just uuid -> do
           json $ Error { error = "mm-exists",

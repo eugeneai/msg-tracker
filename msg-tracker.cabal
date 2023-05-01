@@ -63,6 +63,7 @@ library
 
     -- Modules exported by the library.
     exposed-modules:  TrackerLib
+                    , TLSH
 
     -- Modules included in this library but not exported.
     -- other-modules:
@@ -104,7 +105,7 @@ library
                  , memory
                  , word8
                  , ghc-prim
-                 , cryptohash
+                 , vector-quicksort
                  -- , haskell-hex
     -- Directories containing source files.
     hs-source-dirs:   lib

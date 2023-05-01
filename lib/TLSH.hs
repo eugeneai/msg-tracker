@@ -6,7 +6,10 @@
 
 module TLSH
   (
-    hashUpdate
+    tlshInit
+  , tlshUpdate
+  , tlshFinalize
+  , tlshHash
   )
   where
 
@@ -14,6 +17,7 @@ import Prelude.Compat
 import Data.Bits ( Bits(..) )
 import Data.Vector
 import qualified Data.Vector as V
+import qualified Data.Vector.Algorithms.Quicksort as Q
 import qualified Data.Vector.Mutable as M
 -- import Data.Text.Lazy as TL
 import Data.Int (Int8, Int16, Int32, Int64)
@@ -26,15 +30,15 @@ import GHC.Float.RealFracMethods (floorFloatInt)
 import Data.Text.Internal.Read (hexDigitToInt)
 import Control.Monad.IO.Class ( MonadIO(liftIO) )
 import Data.ByteString.Lazy.Char8 as BL
-import Crypto.Hash (hash)
 import Data.Aeson.Decoding.ByteString (bsToTokens)
 import Control.Monad.ST (ST, runST)
+import qualified Data.Vector.Unboxed as U
 -- import Data.Hex
 
 type Bucket = Vector Word8
 
 data TlshContext = Tc { bucket :: Bucket
-                      , qs :: [Int]
+                      , qs :: [Word8]
                       , checksum :: Int
                       }
 
@@ -60,38 +64,86 @@ data Tlsh = Tlsh TlshContext
 
 hashBlockSize :: Int
 hashBlockSize = 5
-hashInit :: TlshContext
-hashInit = Tc { bucket = (V.replicate buckets 0),
+
+tlshInit :: TlshContext
+tlshInit = Tc { bucket = (V.replicate buckets 0),
                 qs = [0,0,0], checksum = 0}
 
-hashUpdate :: TlshContext -> ByteString -> TlshContext
-hashUpdate context byteString =
+tlshUpdate :: TlshContext -> ByteString -> TlshContext
+tlshUpdate context byteString =
   let tmp = L.foldl updateGo context
                     (zipg hashBlockSize byteString) :: TlshContext
-  in updateQuartiles tmp
+  in updateChecksum tmp
   where
     zipg :: Int -> BL.ByteString -> [BL.ByteString]
     zipg n bs = L.filter (\str -> BL.length str == (toEnum n)) $ zipg' n bs
     zipg' :: Int -> BL.ByteString -> [BL.ByteString]
-    zipg' n bs = (BL.take (toEnum n) bs):zipg n (BL.tail bs)
+    zipg' n bs = (BL.take (toEnum n) bs):restGo n bs
+
+    restGo :: Int -> BL.ByteString -> [BL.ByteString]
+    restGo n bs =
+      let
+        tryN = BL.take (toEnum n) bs
+      in if BL.length tryN /= 0 then zipg' n $ BL.tail bs else []
+
+    updateChecksum ctx = ctx
 
     updateGo :: TlshContext -> BL.ByteString -> TlshContext
     updateGo c bs = do
       let b = bucket c
-      let ubu = L.foldr (upd bs) b [1..6]
-      let ncs = BL.foldr (\x prev -> prev + (fromEnum . ord $ x))
+      let lc = toString bs
+      let ubu = L.foldr (upd lc) b [1..6]
+      let ncs = BL.foldr (\x prev -> prev + (fromEnum . ord $ x)) -- TODO: Check alg
                          (checksum c) bs
-      Tc {bucket = (bucket c), qs = (qs c), checksum=ncs}
+      Tc {bucket = ubu, qs = (qs c), checksum=ncs}
 
-    upd :: BL.ByteString -> Int -> Bucket -> Bucket
-    upd bs i b = V.modify (\el -> M.modify el (\v -> v+1) (triplet bs i)) b
-    -- upd bs i b = V.modify b (\el -> M.write el 0 (1::Word8)) (triplet bs i)
+    upd :: [Char] -> Int -> Bucket -> Bucket
+    upd lc i b = V.modify (\el -> M.modify el (\v -> v+1)
+                                  (triplet hashBlockSize lc i)) b
 
-    updateQuartiles:: TlshContext -> TlshContext
-    updateQuartiles c = c -- TODO Implement updateQuartiles
+    triplet :: Int -> [Char] -> Int -> Int
+    triplet 5 [b0,b1,b2,b3,b4] 1 = bMapping 49  b0 b1 b2
+    triplet 5 [b0,b1,b2,b3,b4] 2 = bMapping 12  b0 b1 b3
+    triplet 5 [b0,b1,b2,b3,b4] 3 = bMapping 178 b0 b2 b3
+    triplet 5 [b0,b1,b2,b3,b4] 4 = bMapping 166 b0 b2 b4
+    triplet 5 [b0,b1,b2,b3,b4] 5 = bMapping 84  b0 b1 b4
+    triplet 5 [b0,b1,b2,b3,b4] 6 = bMapping 230 b0 b3 b3
+    triplet _ _ _ = error "Hashing scheme is not implemented"
 
-triplet :: BL.ByteString -> Int -> Int
-triplet bs num = num -- TODO: Implement
+    toString = BL.unpack
+
+tlshFinalize :: TlshContext -> TlshContext
+tlshFinalize ctx =
+  let sbu = sortGo . bucket $ ctx
+      qs = calcQuartiles sbu
+  in Tc {bucket = sbu, qs=qs, checksum=(checksum ctx)}
+  where
+    calcQuartiles:: Bucket -> [Word8]
+    calcQuartiles bu = [bv bu 4 1, bv bu 2 1, bv bu 4 3]
+    idxs len divider mult
+      | len `mod` divider == 0 =
+        let d = len `div` divider
+            p = d*mult in [p,p+1]
+      | otherwise =
+        let d = len `div` divider
+            p = d*mult in [p+1]
+    bv :: Bucket -> Int -> Int -> Word8
+    bv bu d m =
+      let ids = idxs buckets d m
+      in case ids of
+           [i] -> bu ! i
+           [i,j] -> let s = (bu ! i) + (bu ! j)
+                    in (shiftR s 1) + if even s then 0 else 1
+
+    sortGo :: Bucket -> Bucket
+    sortGo b = Q.sort $ b
+
+tlshHash :: ByteString -> TlshContext
+tlshHash bs =
+  let tlsh = tlshInit
+      tlsh1 = tlshUpdate tlsh bs
+      answer = tlshFinalize tlsh1
+  in answer
 
 vTable :: Vector Word8
 vTable = fromList [
@@ -126,14 +178,15 @@ log_1_1 = 0.095310180
 -- tlshText :: TL.Text -> Hash
 -- tlshText t = Hash "2345"
 
-bMapping :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
-bMapping salt i j k = h4
+bMapping :: Word8 -> Char -> Char -> Char -> Int
+bMapping salt i j k = fromEnum h4
   where
-    h4 = go h3 k
-    h3 = go h2 j
-    h2 = go h1 i
+    h4 = go h3 (o k)
+    h3 = go h2 (o j)
+    h2 = go h1 (o i)
     h1 = go h0 salt
     h0 = 0
+    o = toEnum . ord
     go a b = vTable ! (fromEnum $ xor a b)
 
 lCapturing :: Int16 -> Int16
@@ -200,7 +253,7 @@ sliding_wnd_size = 5
 rng_size :: Int
 rng_size = sliding_wnd_size
 rng_idx :: Int -> Int
-rng_idx i = i+rng_size `mod` rng_size
+rng_idx i = (i+rng_size) `mod` rng_size
 tlsh_checksum_len :: Int
 tlsh_checksum_len = 1
 buckets :: Int
@@ -215,6 +268,7 @@ range_lvalue :: Word8
 range_lvalue = 256
 range_qratio :: Word8
 range_qratio = 16
+
 {-
 partition :: Vector Int16 -> Int -> Int -> Int
 partition buf left right = do
