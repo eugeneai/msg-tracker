@@ -136,13 +136,18 @@ tlshFinalize ctx =
          word8Header = wh3,
          word8Digest = digest}
   where
+    -- qCalc q q3 = toEnum ((floorFloatInt(fromIntegral (q*100) /
+    --                                     fromIntegral q3)) `mod` 16) :: Word8
+    qCalc q q3 = (((q*100) `div` q3) `mod` 16)
     calcDigest ctx q =
       let bu = bucket ctx
           cs = checksum ctx
           wh = word8Header ctx
           wd = word8Digest ctx
-          logOfLen = toEnum . lCapturing . bytesLen $ ctx :: Word8
-          qd = 222
+          logOfLen = toEnum $ ((lCapturing . bytesLen $ ctx) `mod` 256) :: Word8
+          qh = qCalc (q !! 0) (q !! 2)
+          ql = qCalc (q !! 1) (q !! 2)
+          qd = (shiftL qh 4) .|. ql -- or wise versa
       in
         let wh1 = V.modify (\el -> M.write el 0 (toEnum $ cs `mod` 256)) wh
             wh2 = V.modify (\el -> M.write el 1 logOfLen) wh1
