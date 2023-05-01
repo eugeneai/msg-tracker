@@ -40,12 +40,13 @@ type Bucket = Vector Word8
 data TlshContext = Tc { bucket :: Bucket
                       , qs :: [Word8]
                       , checksum :: Int
+                      , word8Digest :: Bucket
                       }
 
 instance Show TlshContext where
   show :: TlshContext -> String
-  show (Tc bu qs ch) = L.concat [showBu bu,
-                                 " ", (show qs), " ", (show ch)]
+  show (Tc bu qs ch dg) = L.concat [showBu bu,
+                                 " ", (show qs), " ", (show ch), showBu dg]
 
 showBu :: Vector Word8 -> String
 showBu bu =
@@ -66,8 +67,11 @@ hashBlockSize :: Int
 hashBlockSize = 5
 
 tlshInit :: TlshContext
-tlshInit = Tc { bucket = (V.replicate buckets 0),
-                qs = [0,0,0], checksum = 0}
+tlshInit = Tc { bucket = zeroVector buckets,
+                qs = [0,0,0], checksum = 0,
+                word8Digest = zeroVector int_digest_length}
+
+zeroVector size = (V.replicate size 0)
 
 tlshUpdate :: TlshContext -> ByteString -> TlshContext
 tlshUpdate context byteString =
@@ -95,7 +99,8 @@ tlshUpdate context byteString =
       let ubu = L.foldr (upd lc) b [1..6]
       let ncs = BL.foldr (\x prev -> prev + (fromEnum . ord $ x)) -- TODO: Check alg
                          (checksum c) bs
-      Tc {bucket = ubu, qs = (qs c), checksum=ncs}
+      Tc {bucket = ubu, qs = (qs c), checksum=ncs,
+          word8Digest=(word8Digest c)}
 
     upd :: [Char] -> Int -> Bucket -> Bucket
     upd lc i b = V.modify (\el -> M.modify el (\v -> v+1)
@@ -115,9 +120,43 @@ tlshUpdate context byteString =
 tlshFinalize :: TlshContext -> TlshContext
 tlshFinalize ctx =
   let sbu = sortGo . bucket $ ctx
-      qs = calcQuartiles sbu
-  in Tc {bucket = sbu, qs=qs, checksum=(checksum ctx)}
+      q = calcQuartiles sbu
+      digest = calcDigest ctx q
+  -- in Tc {bucket = sbu, qs=qs, checksum=(checksum ctx)} -- Debugging quartiles
+  in Tc {bucket = (bucket ctx), qs=q, checksum=(checksum ctx),
+        word8Digest = digest}
   where
+    calcDigest ctx q =
+      let bu = bucket ctx
+          cs = checksum ctx
+          wd = word8Digest ctx
+          logOfLen = 111
+          qd = 222
+      in
+        let wd1 = V.modify (\el -> M.write el 1 (toEnum $ cs `mod` 256)) wd
+            wd2 = V.modify (\el -> M.write el 2 logOfLen) wd1
+            wd3 = V.modify (\el -> M.write el 3 qd) wd2
+            wdend = fillFromBucket q bu wd3 4 0
+        in wdend
+
+    fillFromBucket :: [Word8] -> Bucket -> Bucket -> Int -> Int -> Bucket
+    fillFromBucket q bu wd iwd ibu =
+      let val = emit q [(bu ! ibu), (bu ! (ibu+1)), (bu ! (ibu+3)), (bu ! (ibu+2))]
+          wd1 = V.modify (\el -> M.write el iwd val) wd
+      in if ibu + 4 < V.length bu
+         then fillFromBucket q bu wd1 (iwd+1) (ibu+4)
+         else wd1
+
+    emit :: [Word8] -> [Word8] -> Word8
+    emit q = L.foldl (\acc x -> (shiftL acc 2) + (qual q x)) 0
+      where
+        qual :: [Word8] -> Word8 -> Word8
+        qual [q1, q2, q3] v
+          | v <= q1 = 0
+          | v <= q2 = 1
+          | v <= q3 = 2
+          | otherwise = 3
+
     calcQuartiles:: Bucket -> [Word8]
     calcQuartiles bu = [bv bu 4 1, bv bu 2 1, bv bu 4 3]
     idxs len divider mult
@@ -137,6 +176,9 @@ tlshFinalize ctx =
 
     sortGo :: Bucket -> Bucket
     sortGo b = Q.sort $ b
+
+tlshDigest :: ctx -> BL.ByteString
+tlshDigest ctx = "abcdef"
 
 tlshHash :: ByteString -> TlshContext
 tlshHash bs =
@@ -268,6 +310,8 @@ range_lvalue :: Word8
 range_lvalue = 256
 range_qratio :: Word8
 range_qratio = 16
+int_digest_length = (shiftR buckets 2) + 4
+digest_length = (shiftR buckets 1) + 3
 
 {-
 partition :: Vector Int16 -> Int -> Int -> Int
