@@ -40,13 +40,18 @@ type Bucket = Vector Word8
 data TlshContext = Tc { bucket :: Bucket
                       , qs :: [Word8]
                       , checksum :: Int
+                      , bytesLen :: Int
+                      , word8Header :: Bucket
                       , word8Digest :: Bucket
                       }
 
 instance Show TlshContext where
   show :: TlshContext -> String
-  show (Tc bu qs ch dg) = L.concat [showBu bu,
-                                 " ", (show qs), " ", (show ch), showBu dg]
+  show (Tc bu qs ch bl wh dg) = L.concat [showBu bu,
+                                    " ", (show qs), " / ", (show ch),
+                                    " | ", show bl, " | ",
+                                    " / ", showBu wh,
+                                    " / ", showBu dg]
 
 showBu :: Vector Word8 -> String
 showBu bu =
@@ -69,6 +74,8 @@ hashBlockSize = 5
 tlshInit :: TlshContext
 tlshInit = Tc { bucket = zeroVector buckets,
                 qs = [0,0,0], checksum = 0,
+                bytesLen = 0,
+                word8Header = zeroVector int_digest_header,
                 word8Digest = zeroVector int_digest_length}
 
 zeroVector size = (V.replicate size 0)
@@ -100,6 +107,8 @@ tlshUpdate context byteString =
       let ncs = BL.foldr (\x prev -> prev + (fromEnum . ord $ x)) -- TODO: Check alg
                          (checksum c) bs
       Tc {bucket = ubu, qs = (qs c), checksum=ncs,
+          bytesLen = (bytesLen c) + fromEnum (BL.length bs),
+          word8Header = (word8Header c),
           word8Digest=(word8Digest c)}
 
     upd :: [Char] -> Int -> Bucket -> Bucket
@@ -121,23 +130,25 @@ tlshFinalize :: TlshContext -> TlshContext
 tlshFinalize ctx =
   let sbu = sortGo . bucket $ ctx
       q = calcQuartiles sbu
-      digest = calcDigest ctx q
-  -- in Tc {bucket = sbu, qs=qs, checksum=(checksum ctx)} -- Debugging quartiles
+      (wh3, digest) = calcDigest ctx q
   in Tc {bucket = (bucket ctx), qs=q, checksum=(checksum ctx),
-        word8Digest = digest}
+         bytesLen = (bytesLen ctx),
+         word8Header = wh3,
+         word8Digest = digest}
   where
     calcDigest ctx q =
       let bu = bucket ctx
           cs = checksum ctx
+          wh = word8Header ctx
           wd = word8Digest ctx
-          logOfLen = 111
+          logOfLen = toEnum . lCapturing . bytesLen $ ctx :: Word8
           qd = 222
       in
-        let wd1 = V.modify (\el -> M.write el 1 (toEnum $ cs `mod` 256)) wd
-            wd2 = V.modify (\el -> M.write el 2 logOfLen) wd1
-            wd3 = V.modify (\el -> M.write el 3 qd) wd2
-            wdend = fillFromBucket q bu wd3 4 0
-        in wdend
+        let wh1 = V.modify (\el -> M.write el 0 (toEnum $ cs `mod` 256)) wh
+            wh2 = V.modify (\el -> M.write el 1 logOfLen) wh1
+            wh3 = V.modify (\el -> M.write el 2 qd) wh2
+            wdend = fillFromBucket q bu wd 0 0
+        in (wh3, wdend)
 
     fillFromBucket :: [Word8] -> Bucket -> Bucket -> Int -> Int -> Bucket
     fillFromBucket q bu wd iwd ibu =
@@ -231,14 +242,15 @@ bMapping salt i j k = fromEnum h4
     o = toEnum . ord
     go a b = vTable ! (fromEnum $ xor a b)
 
-lCapturing :: Int16 -> Int16
+lCapturing :: Int -> Int
 lCapturing len
   | len <= 656 = fun len log_1_5 0.0
   | len <= 3199 = fun len log_1_3 8.72777
   | otherwise = fun len log_1_1 62.5472
   where
-    fun :: Int16 -> Float -> Float -> Int16
-    fun len logc sub = toEnum . floorFloatInt $ (log . fromIntegral $ len) / logc - sub
+    fun :: Int -> Float -> Float -> Int
+    fun len logc sub = toEnum . floorFloatInt $
+      (log . fromIntegral $ len) / logc - sub
 
 swapByte :: Word8 -> Word8
 swapByte i = a .|. b
@@ -310,7 +322,8 @@ range_lvalue :: Word8
 range_lvalue = 256
 range_qratio :: Word8
 range_qratio = 16
-int_digest_length = (shiftR buckets 2) + 4
+int_digest_length = shiftR buckets 2
+int_digest_header = 3
 digest_length = (shiftR buckets 1) + 3
 
 {-
