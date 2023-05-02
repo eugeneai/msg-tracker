@@ -74,6 +74,7 @@ data Message = Answer
                -- , lev::Float
                , mm::U.UUID -- MM.Hash64 as UUID = 0.....0-hash
                -- , error::T.Text
+               , tlsh::String
                } deriving (Show, Eq, Generic)
 
 data ErrorReport = Error
@@ -182,9 +183,10 @@ msgServer sto = do
       -- liftIO $ putStrLn $ "Cmurmur" ++ show mm
       cmm <- liftIO $ getMurMur db mm
       let tlsh = tlshHash b
-      liftIO $ putStrLn $ show $ BL.length b
-      liftIO $ putStrLn $ "TLSH: " ++ show tlsh
-      liftIO $ putStrLn $ "TLSH: " ++ (show $ (tlshDigest tlsh :: String))
+          tlshD = tlshDigest tlsh :: String
+      -- liftIO $ putStrLn $ show $ BL.length b
+      -- liftIO $ putStrLn $ "TLSH: " ++ show tlsh
+      liftIO $ putStrLn $ "TLSH digest: " ++ (show $ (tlshD))
       case cmm of
         Just uuid -> do
           json $ Error { error = "mm-exists",
@@ -196,7 +198,7 @@ msgServer sto = do
             Just uuid -> do
               krc <- liftIO $ storeMessage db uuid b
               mmrc <- liftIO $ storeMurMur db mm uuid
-              let answer = Answer {msgid=uuid, mm=mm}
+              let answer = Answer {msgid=uuid, mm=mm, tlsh=tlshD}
               json answer
             Nothing -> json $ Error {error="no-uuid",
                                      description="Cannot generate an UUID",
