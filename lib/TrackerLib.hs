@@ -28,6 +28,7 @@ import Data.List (elem)
 import TLSH (tlshHash
             , tlshUpdate
             , tlshFinalize
+            , tlshDigest
             )
 -- import Data.Aeson
 import Prelude.Compat
@@ -183,6 +184,7 @@ msgServer sto = do
       let tlsh = tlshHash b
       liftIO $ putStrLn $ show $ BL.length b
       liftIO $ putStrLn $ "TLSH: " ++ show tlsh
+      liftIO $ putStrLn $ "TLSH: " ++ (show $ (tlshDigest tlsh :: String))
       case cmm of
         Just uuid -> do
           json $ Error { error = "mm-exists",

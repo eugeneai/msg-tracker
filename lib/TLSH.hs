@@ -3,6 +3,7 @@
 {-# LANGUAGE RecordWildCards   #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module TLSH
   (
@@ -10,6 +11,7 @@ module TLSH
   , tlshUpdate
   , tlshFinalize
   , tlshHash
+  , tlshDigest
   )
   where
 
@@ -33,6 +35,7 @@ import Data.ByteString.Lazy.Char8 as BL
 import Data.Aeson.Decoding.ByteString (bsToTokens)
 import Control.Monad.ST (ST, runST)
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Text as TL
 -- import Data.Hex
 
 type Bucket = Vector Word8
@@ -193,8 +196,49 @@ tlshFinalize ctx =
     sortGo :: Bucket -> Bucket
     sortGo b = Q.sort $ b
 
-tlshDigest :: ctx -> BL.ByteString
-tlshDigest ctx = "abcdef"
+class HexDigest a where
+  tlshDigest :: TlshContext -> a
+
+instance HexDigest [Char] where
+  tlshDigest ctx =
+    let hwh = toHex . word8Header $ ctx
+        wd = word8Digest ctx
+    in L.concat [hwh, toHex wd]
+    where
+      toHex = V.foldr th ""
+      th :: Word8 -> [Char] -> [Char]
+      th b str =
+        let a = tt (shiftR b 4 :: Word8)
+            c = tt (b .&. 0x0f :: Word8)
+        in a:c:str
+
+      tt :: Word8 -> Char
+      tt 0 = '0'
+      tt 1 = '1'
+      tt 2 = '2'
+      tt 3 = '3'
+      tt 4 = '4'
+      tt 5 = '5'
+      tt 6 = '6'
+      tt 7 = '7'
+      tt 8 = '8'
+      tt 9 = '9'
+      tt 10 = 'A'
+      tt 11 = 'B'
+      tt 12 = 'C'
+      tt 13 = 'D'
+      tt 14 = 'E'
+      tt 15 = 'F'
+
+instance HexDigest BL.ByteString where
+  tlshDigest ctx =
+    let hd = tlshDigest ctx :: String
+    in BL.pack hd
+
+instance HexDigest TL.Text where
+  tlshDigest ctx =
+    let hd = tlshDigest ctx :: String
+    in TL.pack hd
 
 tlshHash :: ByteString -> TlshContext
 tlshHash bs =
@@ -332,141 +376,6 @@ int_digest_header = 3
 digest_length = (shiftR buckets 1) + 3
 
 {-
-partition :: Vector Int16 -> Int -> Int -> Int
-partition buf left right = do
-  if left == right then do return left
-    else if (left+1) == right then do
-      M.swap buf left right
-      return left
-    else do
-      let ret = left
-          pivot = shiftR (left + right) 1
-      val <- M.read buf pivot
-      nret <- permuteGo val left right (pure ret) left
-      nretval <- M.read buf nret
-      M.write buf right nretval
-      M.write buf nret val
-      return nret
-  where
-    permuteGo :: Int16 -> Int -> Int -> IO Int -> Int -> IO Int
-    permuteGo val l r mret i = do
-      ret <- mret
-      if i < r then do
-        iv <- M.read buf i
-        if iv<val then do
-          M.swap buf ret i
-          permuteGo val l r (pure (ret+1)) (i+1)
-        else do
-          permuteGo val l r (pure ret) (i+1)
-      else do
-        return ret
-
-
-findQuartile tlsh quartiles = do
-  shotcutLeft <- liftIO $ M.replicate eff_buckets (0 :: Int16) -- Int32
-  shotcutRight <- liftIO $ M.replicate eff_buckets (0 :: Int16) -- Int32
-  let spl = 0
-      spr = 0
-      p1 = shiftR eff_buckets 2 - 1
-      p2 = shiftR eff_buckets 1 - 1
-      p3 = eff_buckets - (shiftR eff_buckets 2) - 1
-      end = eff_buckets - 1
-  buf <- M.generate eff_buckets (copyGo $ aBucket tlsh)-- Int32
-
-  splitP2 buf shortcutLeft shortcutRight p2 end 0
-
-  where
-    copyGo iobuf i = do
-      buf <- iobuf
-      M.read buf i
-    splitP2 buf left rigth p2 end i
-      | i > end
-
-data TLSH = TLSH { checksum :: IO (M.MVector (M.PrimState IO) Int16)
-                 , slideWindow :: IO (M.MVector (M.PrimState IO) Int16)
-                 , aBucket :: IO (M.MVector (M.PrimState IO) Int32)
-                 , dataLen :: IO (M.MVector (M.PrimState IO) Int16)
-                 , lValue :: IO (M.MVector (M.PrimState IO) Word8)
-                 , q :: IO (M.MVector (M.PrimState IO) Word8)
-                 , lshCodeValid :: IO (M.MVector (M.PrimState IO) Bool)
-                 , tmpCode :: IO (M.MVector (M.PrimState IO) Word8)
-                 , lshCode :: IO (M.MVector (M.PrimState IO) Word8)}
-
-
-emptyTlsh :: TLSH
-emptyTlsh = TLSH { checksum = M.replicate tlsh_checksum_len 0
-                 , slideWindow = M.replicate sliding_wnd_size 0
-                 , aBucket = M.replicate buckets 0
-                 , dataLen = M.replicate 1 0
-                 , tmpCode = M.replicate code_size 0
-                 , lValue = M.replicate 1 0
-                 , q = M.replicate 1 0
-                 , lshCode = M.replicate 1 0
-                 , lshCodeValid = M.replicate 1 False}
-
-
-hash :: TLSH -> IO (Either String TLSH)
-hash tlsh = do
-  bcv <- liftIO $ lshCodeValid tlsh
-  cv <- M.read bcv 0
-  if not cv then do
-    return $ Left "ERROR IN PROCESSING"
-  else do
-    let tmp = emptyTlsh
-    _ <- swapBytes tlsh tmp lValue
-    _ <- swapBytes tlsh tmp q
-    _ <- copyCode tlsh tmp
-    -- synthesize hash by portions
-    return $ Right tlsh
-  where
-    swapBytes :: TLSH -> TLSH ->
-                 (TLSH -> IO (M.MVector (M.PrimState IO) Word8)) -> IO ()
-    swapBytes this tmp selector = do
-      th <- liftIO $ selector this
-      tm <- liftIO $ selector tmp
-      swapBytesGo th tm (M.length th)
-
-    swapBytesGo :: M.MVector (M.PrimState IO) Word8 ->
-                   M.MVector (M.PrimState IO) Word8 ->
-                   Int -> IO ()
-    swapBytesGo a b n
-      | n > 0 = do
-        av <- M.read a n
-        let bv = swapByte av
-        M.write b n bv
-        swapBytesGo a b (n-1)
-      | otherwise = do pure ()
-
-    copyCode :: TLSH -> TLSH -> IO ()
-    copyCode this tmp = do
-      th <- tmpCode this
-      tm <- tmpCode tmp
-      copyCodeGo th tm 0
-
-    copyCodeGo :: M.MVector (M.PrimState IO) Word8 ->
-                  M.MVector (M.PrimState IO) Word8 ->
-                  Int -> IO ()
-    copyCodeGo a b n
-      | n > 0 = do
-        av <- M.read a n
-        M.write b (code_size - 1 - n) av
-        copyCodeGo a b (n-1)
-      | otherwise = do pure ()
-
-{-
-
-    this.lsh_code = to_hex(tmp.checksum, TLSH_CHECKSUM_LEN);
-
-    let tmpArray = new Uint8Array(1);
-    tmpArray[0] = tmp.Lvalue;
-    this.lsh_code = this.lsh_code.concat(to_hex(tmpArray, 1));
-
-    tmpArray[0] = tmp.Q;
-    this.lsh_code = this.lsh_code.concat(to_hex(tmpArray, 1));
-    this.lsh_code = this.lsh_code.concat(to_hex(tmp.tmp_code, CODE_SIZE));
-    return this.lsh_code;
--}
-
 getQLo :: (Bits a, Num a) => a -> a
 getQLo q = q .&. 0x0f
 getQHi :: (Bits a, Num a) => a -> a
