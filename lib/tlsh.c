@@ -66,9 +66,13 @@
 // #include <algorithm>
 #include <string.h>
 #include <errno.h>
+#include <malloc.h>
 
 #define RANGE_LVALUE 256
 #define RANGE_QRATIO 16
+#define BUCKETS 256
+#define TLSH_CHECKSUM_LEN
+#define SLIDING_WND_SIZE 5
 
 typedef struct {
     unsigned int *a_bucket;
@@ -88,7 +92,7 @@ typedef struct {
         unsigned char tmp_code[32];
     } lsh_bin;
     char *lsh_code;
-    bool lsh_code_valid;
+    int lsh_code_valid;
 } TlshImpl;
 
 static void find_quartile(unsigned int *q1, unsigned int *q2, unsigned int *q3, const unsigned int * a_bucket);
@@ -102,7 +106,7 @@ void tlshImpl_reset(TlshImpl * this) {
   memset(this->slide_window, 0, sizeof this->slide_window);
   memset(&this->lsh_bin, 0, sizeof this->lsh_bin);
   this->data_len = 0;
-  this->lsh_code_valid = false;
+  this->lsh_code_valid = 0;
 }
 
 TlshImpl * tlshImpl_new() {
