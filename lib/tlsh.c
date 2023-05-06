@@ -67,6 +67,7 @@
 #include <string.h>
 #include <errno.h>
 #include <malloc.h>
+#include <stdlib.h>
 
 #define RANGE_LVALUE 256
 #define RANGE_QRATIO 16
@@ -201,11 +202,10 @@ unsigned char b_mapping(unsigned char salt, unsigned char i, unsigned char j, un
 #define RNG_IDX(i)	((i+RNG_SIZE)%RNG_SIZE)
 
 void tlshImpl_fast_update5(TlshImpl * this,
-                           const unsigned char* data, unsigned int len, int tlsh_option);
+                           const unsigned char* data, unsigned int len);
 
 
-void tlshImpl_update(TlshImpl * this, const unsigned char* data,
-                     unsigned int len, int tlsh_option)
+void tlshImpl_update(TlshImpl * this, const unsigned char* data, unsigned int len)
 {
     if (this->lsh_code_valid) {
       fprintf(stderr, "call to update() on a tlsh that is already valid\n");
@@ -220,11 +220,8 @@ void tlshImpl_update(TlshImpl * this, const unsigned char* data,
     }
 
     if (TLSH_CHECKSUM_LEN == 1) {
-      tlshImpl_fast_update5(this, data, len, tlsh_option);
-	/* if ((tlsh_option & TLSH_OPTION_THREADED) || (tlsh_option & TLSH_OPTION_PRIVATE)) {
-	* 	this->lsh_bin.checksum[0] = 0;
-	}*/
-	return;
+      tlshImpl_fast_update5(this, data, len);
+      return;
     }
     int j = (int)(this->data_len % RNG_SIZE);
 
@@ -360,7 +357,7 @@ static void raw_fast_update5(
 }
 
 void tlshImpl_fast_update5(TlshImpl * this,
-                           const unsigned char* data, unsigned int len, int tlsh_option)
+                           const unsigned char* data, unsigned int len)
 {
 
   raw_fast_update5 (data, len, this->data_len, this->a_bucket, &(this->lsh_bin.checksum[0]), this->slide_window);
@@ -573,7 +570,7 @@ unsigned char l_capturing(unsigned int len)
 /////////////////////////////////////////////////////////////////////////////
 
 /* to signal the class there is no more data to be added */
-void tlshImpl_final(TlshImpl * this, int fc_cons_option)
+void tlshImpl_final(TlshImpl * this)
 {
     if (this->lsh_code_valid) {
       fprintf(stderr, "call to final() on a tlsh that is already valid\n");
@@ -5650,3 +5647,41 @@ unsigned int partition(unsigned int * buf, unsigned int left, unsigned int right
 
     return ret;
 }
+
+
+#ifdef TEST_SUBRS
+#define BUF_LEN 1024
+
+char buf[BUF_LEN];
+char digest[TLSH_STRING_LEN_REQ+3];
+int main(int argc, char *argv[])
+{
+  if (argc != 2) {
+    printf("Usage: %s <file name to hash>");
+    exit(1);
+  }
+  FILE * in = fopen(argv[1], "r");
+  if (in == NULL) {
+    fprintf(stderr, "Cannot open file '%s'", argv[1]);
+    exit(1);
+  }
+
+  TlshImpl * hash = tlshImpl_new();
+
+  while (1) {
+      size_t s = fread(buf, 1, BUF_LEN, in);
+      //printf("Read %i\n", s);
+      if (s==0) break;
+      tlshImpl_update(hash, buf, s);
+  }
+  tlshImpl_final(hash);
+  tlshImpl_hash(hash, digest, sizeof(digest), 1);
+  printf("Dugest (T):%s\n", digest);
+  tlshImpl_hash(hash, digest, sizeof(digest), 0);
+  printf("Dugest:%s\n", digest);
+  tlshImpl_done(hash);
+  hash = NULL;
+  return 0;
+}
+
+#endif

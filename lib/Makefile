@@ -1,4 +1,4 @@
 .PHONY: run
 SRC=tlsh.c
 run: $(SRC)
-	gcc -c $<
+	gcc -o tlsh -DTEST_SUBRS $<

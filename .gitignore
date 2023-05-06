@@ -5,3 +5,5 @@
 /.log
 /.*
 *.o
+/lib/tlsh
+/lib/*.txt
