@@ -185,7 +185,7 @@ msgServer sto = do
       let tlsh = tlshHash b
           tlshD = tlshDigest tlsh :: String
       -- liftIO $ putStrLn $ show $ BL.length b
-      -- liftIO $ putStrLn $ "TLSH: " ++ show tlsh
+      liftIO $ putStrLn $ "TLSH: " ++ show tlsh
       liftIO $ putStrLn $ "TLSH digest: " ++ (show $ (tlshD))
       case cmm of
         Just uuid -> do
